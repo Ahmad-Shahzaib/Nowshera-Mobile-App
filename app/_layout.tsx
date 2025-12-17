@@ -67,6 +67,26 @@ export default function RootLayout() {
     }, 0);
   }, [isLoaded, isSignedIn, isAuthGroup, router]);
 
+  // Re-read persisted auth whenever navigation segments change so logout
+  // (which removes `SIGNED_IN`) is reflected in `isSignedIn` promptly.
+  useEffect(() => {
+    let mounted = true;
+    (async () => {
+      try {
+        const val = await AsyncStorage.getItem('SIGNED_IN');
+        if (!mounted) return;
+        setIsSignedIn(val === 'true');
+      } catch (e) {
+        if (!mounted) return;
+        setIsSignedIn(false);
+      }
+    })();
+
+    return () => {
+      mounted = false;
+    };
+  }, [segments]);
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <ReduxProvider>

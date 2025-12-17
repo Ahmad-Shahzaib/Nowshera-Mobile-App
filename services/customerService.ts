@@ -1,8 +1,18 @@
 import { getAxiosInstance } from '@/lib/axios';
 import { Customer, CustomerResponse } from '@/types/customer';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as Network from 'expo-network';
 import { invoiceService } from './invoiceService';
 import localDB from './localDatabase';
+
+// Guards to prevent sync storms
+let _isBackgroundSyncing = false;
+let _backgroundSyncDisabled = false;
+let _backgroundSyncDisabledLogged = false;
+
+// Cooldown mechanism to reduce debug noise and unnecessary checks
+let _lastBackgroundSyncAt: number | null = null;
+const SYNC_COOLDOWN_MS = 30_000; // 30 seconds – adjust if needed
 
 // Helper to check network connectivity
 async function isOnline(): Promise<boolean> {
@@ -14,11 +24,10 @@ async function isOnline(): Promise<boolean> {
   }
 }
 
-// Helper to convert API Customer to LocalDB CustomerRow
+// Convert API Customer → Local DB row
 function customerToLocalRow(customer: Customer): any {
-  // Use customer_id if available, otherwise fall back to id
   const serverId = customer.customer_id || customer.id;
-  
+
   return {
     serverId: serverId.toString(),
     name: customer.name,
@@ -35,10 +44,10 @@ function customerToLocalRow(customer: Customer): any {
   };
 }
 
-// Helper to convert LocalDB CustomerRow to API Customer format
+// Convert Local DB row → API Customer format
 function localRowToCustomer(row: any): Customer {
   const customerId = row.serverId ? parseInt(row.serverId) : 0;
-  
+
   return {
     id: customerId,
     customer_id: customerId,
@@ -77,53 +86,85 @@ function localRowToCustomer(row: any): Customer {
 }
 
 export const customerService = {
+  disableBackgroundSync() {
+    _backgroundSyncDisabled = true;
+    if (!__DEV__) return;
+    if (!_backgroundSyncDisabledLogged) {
+      console.debug('[customerService] Background syncs disabled (user logged out)');
+      _backgroundSyncDisabledLogged = true;
+    }
+  },
+
+  enableBackgroundSync() {
+    _backgroundSyncDisabled = false;
+    _backgroundSyncDisabledLogged = false;
+  },
+
   /**
-   * Fetch all customers - OFFLINE FIRST
-   * 1. Return local data immediately if available
-   * 2. If online, fetch from API and sync to local DB in background
+   * Fetch all customers – OFFLINE FIRST
    */
   async getAllCustomers(): Promise<Customer[]> {
     try {
-      // Always get local data first
+      // 1. Return local data immediately
       const localCustomers = await localDB.getCustomers();
-      
-      // Check if online
+
+      // 2. Check network status
       const online = await isOnline();
-      
+
       if (online) {
-        // Sync in background (don't wait for it)
-        this.syncCustomersFromAPI().catch(error => {
-          console.warn('[customerService] Background sync failed:', error.message);
-        });
+        if (_backgroundSyncDisabled) {
+          // Background syncs are disabled — skip triggering a background fetch.
+        } else {
+          const token = await AsyncStorage.getItem('token');
+          if (!token) {
+            if (__DEV__) {
+              console.debug('[customerService] No auth token present yet, skipping background customer fetch');
+            }
+          } else {
+            // Cooldown + concurrency guard
+            const shouldTriggerSync =
+              !_isBackgroundSyncing &&
+              (!_lastBackgroundSyncAt || Date.now() - _lastBackgroundSyncAt > SYNC_COOLDOWN_MS);
+
+            if (shouldTriggerSync) {
+              this.syncCustomersFromAPI()
+                .catch(err => {
+                  console.warn('[customerService] Background sync failed:', err.message);
+                })
+                .finally(() => {
+                  _lastBackgroundSyncAt = Date.now();
+                });
+            }
+            // No debug log here anymore – silence the repeated "skipped" messages
+          }
+        }
       }
-      
-      // Return local data immediately (offline-first approach)
-      // If local data exists, use it; otherwise return empty array
+
+      // Return cached data if available
       if (localCustomers.length > 0) {
         return localCustomers.map(localRowToCustomer);
       }
-      
-      // If no local data and we're online, wait for API data
+
+      // Fallback: fetch fresh data only if nothing cached and online
       if (online) {
         try {
           const axios = getAxiosInstance();
           const response = await axios.get<CustomerResponse>('/customers');
-          
+
           if (response.data.is_success && Array.isArray(response.data.data)) {
             const apiCustomers = response.data.data;
-            
-            // Save to local DB
+
             for (const customer of apiCustomers) {
               await localDB.upsertCustomer(customerToLocalRow(customer));
             }
-            
+
             return apiCustomers;
           }
         } catch (error: any) {
-          console.warn('[customerService] API fetch failed:', error.message);
+          console.warn('[customerService] Initial API fetch failed:', error.message);
         }
       }
-      
+
       return [];
     } catch (error: any) {
       console.error('[customerService] Error in getAllCustomers:', error);
@@ -132,84 +173,82 @@ export const customerService = {
   },
 
   /**
-   * Background sync customers from API
+   * Background sync from API (full list)
    */
   async syncCustomersFromAPI(): Promise<void> {
+    if (_isBackgroundSyncing) return;
+    if (_backgroundSyncDisabled) return;
+
+    _isBackgroundSyncing = true;
     try {
+      const token = await AsyncStorage.getItem('token');
+      if (!token) return;
+
       const axios = getAxiosInstance();
       const response = await axios.get<CustomerResponse>('/customers');
-      
+
       if (response.data.is_success && Array.isArray(response.data.data)) {
         const apiCustomers = response.data.data;
-        
         console.log(`[customerService] Syncing ${apiCustomers.length} customers from API`);
-        
-        // Update local DB with API data
+
         for (const customer of apiCustomers) {
-          const customerRow = customerToLocalRow(customer);
-          await localDB.upsertCustomer(customerRow);
+          await localDB.upsertCustomer(customerToLocalRow(customer));
         }
-        
+
         console.log('[customerService] Customers synced successfully');
       }
     } catch (error: any) {
+      const status = error?.response?.status;
+      if (status === 401) {
+        console.warn('[customerService] Background sync unauthorized (401)');
+        return;
+      }
       console.error('[customerService] Error syncing customers from API:', error);
       throw error;
+    } finally {
+      _isBackgroundSyncing = false;
     }
   },
 
   /**
-   * Fetch a single customer by ID - OFFLINE FIRST
-   * First check local DB, then try API if online
+   * Fetch single customer – OFFLINE FIRST
    */
   async getCustomerById(id: number): Promise<any> {
     try {
-      // First, try to get from local DB (offline-first)
       const localCustomer = await localDB.getCustomerById(id.toString());
-      
+
       if (localCustomer) {
         const result = {
           customer: localRowToCustomer(localCustomer),
           account_balance: { balance: localCustomer.openingBalance || '0' },
           custom_fields: []
         };
-        
-        // If online, sync in background
+
         const online = await isOnline();
         if (online) {
-          this.syncCustomerFromAPI(id).catch(error => {
-            console.warn('[customerService] Background customer sync failed:', error.message);
+          this.syncCustomerFromAPI(id).catch(err => {
+            console.warn('[customerService] Background single customer sync failed:', err.message);
           });
         }
-        
+
         return result;
       }
-      
-      // If not in local DB and we're online, fetch from API
+
       const online = await isOnline();
       if (online) {
         try {
           const axios = getAxiosInstance();
-          const response = await axios.get<{ 
-            is_success: boolean; 
-            message: string; 
-            data: { 
-              customer: Customer; 
-              account_balance: any; 
-              custom_fields: any[] 
-            } 
-          }>(`/customers/${id}/edit`);
-          
+          const response = await axios.get<any>(`/customers/${id}/edit`);
+
           if (response.data.is_success) {
-            // Save to local cache
             await localDB.upsertCustomer(customerToLocalRow(response.data.data.customer));
             return response.data.data;
           }
         } catch (error: any) {
-          console.warn('[customerService] API fetch failed:', error.message);
+          console.warn('[customerService] API fetch single customer failed:', error.message);
         }
       }
-      
+
       throw new Error('Customer not found');
     } catch (error: any) {
       console.error('[customerService] Error fetching customer:', error);
@@ -217,56 +256,39 @@ export const customerService = {
     }
   },
 
-  /**
-   * Background sync single customer from API
-   */
   async syncCustomerFromAPI(id: number): Promise<void> {
     try {
       const axios = getAxiosInstance();
-      const response = await axios.get<{ 
-        is_success: boolean; 
-        message: string; 
-        data: { 
-          customer: Customer; 
-          account_balance: any; 
-          custom_fields: any[] 
-        } 
-      }>(`/customers/${id}/edit`);
-      
+      const response = await axios.get<any>(`/customers/${id}/edit`);
+
       if (response.data.is_success) {
         await localDB.upsertCustomer(customerToLocalRow(response.data.data.customer));
         console.log(`[customerService] Customer ${id} synced successfully`);
       }
     } catch (error: any) {
-      console.error('[customerService] Error syncing customer from API:', error);
+      console.error('[customerService] Error syncing single customer:', error);
       throw error;
     }
   },
 
-  /**
-   * Create a new customer - OFFLINE FIRST
-   */
   async createCustomer(customerData: Partial<Customer>): Promise<Customer> {
     try {
       const online = await isOnline();
-      
+
       if (online) {
         try {
-          // Try to create on server immediately
           const axios = getAxiosInstance();
           const response = await axios.post<{ is_success: boolean; message: string; data: Customer }>('/customers/store', customerData);
-          
+
           if (response.data.is_success) {
-            // Save to local DB with synced flag
             await localDB.upsertCustomer(customerToLocalRow(response.data.data));
             return response.data.data;
           }
         } catch (error: any) {
-          console.warn('[customerService] API create failed, saving locally:', error.message);
+          console.warn('[customerService] API create failed, falling back to local:', error.message);
         }
       }
-      
-      // Save locally as unsynced
+
       const localRow = await localDB.addCustomer({
         name: customerData.name || '',
         contact: customerData.contact || '',
@@ -278,9 +300,9 @@ export const customerService = {
         state: customerData.billing_state || '',
         country: customerData.billing_country || '',
         zip: customerData.billing_zip || '',
-        synced: 0, // Mark as unsynced
+        synced: 0,
       });
-      
+
       return localRowToCustomer(localRow);
     } catch (error: any) {
       console.error('[customerService] Error creating customer:', error);
@@ -288,99 +310,76 @@ export const customerService = {
     }
   },
 
-  /**
-   * Update an existing customer - OFFLINE FIRST
-   */
   async updateCustomer(id: number, customerData: Partial<Customer>): Promise<Customer> {
     try {
       const online = await isOnline();
-      
+
       if (online) {
         try {
-          // Try to update on server immediately
           const axios = getAxiosInstance();
           const response = await axios.post<{ is_success: boolean; message: string; data: Customer }>(`/customers/${id}/update`, customerData);
-          
+
           if (response.data.is_success) {
-            // Update local DB
             await localDB.upsertCustomer(customerToLocalRow(response.data.data));
             return response.data.data;
           }
         } catch (error: any) {
-          console.warn('[customerService] API update failed, saving locally:', error.message);
+          console.warn('[customerService] API update failed, falling back to local:', error.message);
         }
       }
-      
-      // Update locally and mark as unsynced
+
       const localCustomer = await localDB.getCustomerById(id.toString());
-      if (localCustomer) {
-        await localDB.updateCustomer(localCustomer.id, {
-          name: customerData.name || localCustomer.name,
-          contact: customerData.contact || localCustomer.contact,
-          email: customerData.email || localCustomer.email,
-          taxNumber: customerData.tax_number || localCustomer.taxNumber,
-          openingBalance: customerData.balance || localCustomer.openingBalance,
-          address: customerData.billing_address || localCustomer.address,
-          city: customerData.billing_city || localCustomer.city,
-          state: customerData.billing_state || localCustomer.state,
-          country: customerData.billing_country || localCustomer.country,
-          zip: customerData.billing_zip || localCustomer.zip,
-          synced: 0, // Mark as unsynced
-        });
-        
-        const updated = await localDB.getCustomerById(localCustomer.id);
-        return localRowToCustomer(updated!);
-      }
-      
-      throw new Error('Customer not found in local database');
+      if (!localCustomer) throw new Error('Customer not found in local database');
+
+      await localDB.updateCustomer(localCustomer.id, {
+        name: customerData.name || localCustomer.name,
+        contact: customerData.contact || localCustomer.contact,
+        email: customerData.email || localCustomer.email,
+        taxNumber: customerData.tax_number || localCustomer.taxNumber,
+        openingBalance: customerData.balance || localCustomer.openingBalance,
+        address: customerData.billing_address || localCustomer.address,
+        city: customerData.billing_city || localCustomer.city,
+        state: customerData.billing_state || localCustomer.state,
+        country: customerData.billing_country || localCustomer.country,
+        zip: customerData.billing_zip || localCustomer.zip,
+        synced: 0,
+      });
+
+      const updated = await localDB.getCustomerById(localCustomer.id);
+      return localRowToCustomer(updated!);
     } catch (error: any) {
       console.error('[customerService] Error updating customer:', error);
       throw new Error(error.message || 'Failed to update customer');
     }
   },
 
-  /**
-   * Delete a customer - OFFLINE FIRST
-   */
   async deleteCustomer(id: number): Promise<void> {
     try {
       const online = await isOnline();
-      
+
       if (online) {
         try {
-          // Try to delete from server immediately
           const axios = getAxiosInstance();
           const response = await axios.delete<{ is_success: boolean; message: string }>(`/customer/${id}/destroy`);
-          
+
           if (response.data.is_success) {
-            // Delete from local DB
             const localCustomer = await localDB.getCustomerById(id.toString());
-            if (localCustomer) {
-              await localDB.deleteCustomer(localCustomer.id);
-            }
+            if (localCustomer) await localDB.deleteCustomer(localCustomer.id);
             return;
           }
         } catch (error: any) {
           console.warn('[customerService] API delete failed, deleting locally:', error.message);
         }
       }
-      
-      // Delete from local DB
-      // Note: In a production app, you might want to mark as "pending deletion" 
-      // instead of actually deleting, then sync deletion when online
+
       const localCustomer = await localDB.getCustomerById(id.toString());
-      if (localCustomer) {
-        await localDB.deleteCustomer(localCustomer.id);
-      }
+      if (localCustomer) await localDB.deleteCustomer(localCustomer.id);
     } catch (error: any) {
       console.error('[customerService] Error deleting customer:', error);
       throw new Error(error.message || 'Failed to delete customer');
     }
   },
 
-  /**
-   * Get count of unsynced customers
-   */
   async getUnsyncedCount(): Promise<number> {
     try {
       const unsynced = await localDB.getUnsynced();
@@ -391,20 +390,13 @@ export const customerService = {
     }
   },
 
-  /**
-   * Sync unsynced customers to server
-   */
   async syncUnsyncedCustomers(): Promise<{ success: boolean; syncedCount: number; error?: string }> {
     try {
       const online = await isOnline();
-      if (!online) {
-        return { success: false, syncedCount: 0, error: 'No internet connection' };
-      }
+      if (!online) return { success: false, syncedCount: 0, error: 'No internet connection' };
 
       const unsynced = await localDB.getUnsynced();
-      if (unsynced.length === 0) {
-        return { success: true, syncedCount: 0 };
-      }
+      if (unsynced.length === 0) return { success: true, syncedCount: 0 };
 
       const axios = getAxiosInstance();
       let syncedCount = 0;
@@ -430,37 +422,29 @@ export const customerService = {
           const response = await axios.post('/customers/store', payload);
           const created = response?.data?.data;
           const serverId = created?.id ?? created?.customer_id;
-          
+
           if (serverId) {
-            // Update local customer with server ID
-            const oldLocalId = row.id;
-            await localDB.markAsSynced(oldLocalId, String(serverId));
-            
-            // Update invoices that reference this local customer ID
-            await localDB.updateInvoicesCustomerId(oldLocalId, String(serverId));
-            
+            await localDB.markAsSynced(row.id, String(serverId));
+            await localDB.updateInvoicesCustomerId(row.id, String(serverId));
             syncedCount++;
-            console.log(`[customerService] Customer synced: ${row.name}, local ID: ${oldLocalId}, server ID: ${serverId}`);
+            console.log(`[customerService] Customer synced: ${row.name} (local ${row.id} → server ${serverId})`);
           }
         } catch (error) {
           console.warn('[customerService] Failed to sync customer:', row.id, error);
-          // Continue with next customer
         }
       }
 
-      // After syncing customers, try to sync their invoices
       if (syncedCount > 0) {
         try {
-          console.log('[customerService] Syncing related invoices...');
           await invoiceService.syncInvoices();
         } catch (error) {
-          console.warn('[customerService] Failed to sync invoices:', error);
+          console.warn('[customerService] Failed to sync related invoices:', error);
         }
       }
 
       return { success: true, syncedCount };
     } catch (error: any) {
-      console.error('[customerService] Error syncing customers:', error);
+      console.error('[customerService] Error syncing unsynced customers:', error);
       return { success: false, syncedCount: 0, error: error.message };
     }
   },

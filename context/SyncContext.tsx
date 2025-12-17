@@ -6,6 +6,7 @@ import { categoryService, productService } from '@/services/productService';
 import { syncAll, syncUnsynced } from '@/services/syncService';
 import { warehouseService } from '@/services/warehouseService';
 import type { Dealer } from '@/types/dealer';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 
 type SyncContextValue = {
@@ -54,137 +55,155 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
     // try { enableDbLogging(true); } catch (e) { /* ignore */ }
 
     (async () => {
-      await localDB.initDB();
-      if (!mounted) return;
-      
-      // Sync products if needed (on first launch or after 24 hours)
-      // This is non-blocking - app will work even if sync fails
       try {
-        const needsSync = await productService.needsSync();
-        if (needsSync && isConnected) {
-          console.log('[SyncContext] Syncing products from server...');
-          const result = await productService.syncProducts();
-          if (result.success) {
-            console.log(`[SyncContext] Successfully synced ${result.count} products`);
-          } else {
-            console.warn('[SyncContext] Failed to sync products, will use cached data if available:', result.error);
-            const cachedCount = await productService.getProductCount();
-            if (cachedCount > 0) {
-              console.log(`[SyncContext] Using ${cachedCount} cached products`);
+        // Ensure DB tables exist so local reads work, but avoid kicking off
+        // heavy remote syncs until the user has signed in.
+        await localDB.initDB();
+
+        // If user is not signed in yet, skip remote syncs that write heavily
+        // to the DB (products, categories, warehouses, dealers, bank accounts).
+        const signed = await AsyncStorage.getItem('SIGNED_IN');
+        if (signed !== 'true') {
+          if (!mounted) return;
+          await refresh();
+          setReady(true);
+          return;
+        }
+
+        if (!mounted) return;
+
+        // At this point user is signed in — proceed with normal background syncs
+        try {
+          const needsSync = await productService.needsSync();
+          if (needsSync && isConnected) {
+            console.log('[SyncContext] Syncing products from server...');
+            const result = await productService.syncProducts();
+            if (result.success) {
+              console.log(`[SyncContext] Successfully synced ${result.count} products`);
             } else {
-              console.warn('[SyncContext] No cached products available. Product search may not work until sync succeeds.');
+              console.warn('[SyncContext] Failed to sync products, will use cached data if available:', result.error);
+              const cachedCount = await productService.getProductCount();
+              if (cachedCount > 0) {
+                console.log(`[SyncContext] Using ${cachedCount} cached products`);
+              } else {
+                console.warn('[SyncContext] No cached products available. Product search may not work until sync succeeds.');
+              }
             }
+          } else {
+            const count = await productService.getProductCount();
+            console.log(`[SyncContext] Products already synced (${count} products in database)`);
           }
-        } else {
+        } catch (error) {
+          console.warn('[SyncContext] Error syncing products (non-critical):', error);
           const count = await productService.getProductCount();
-          console.log(`[SyncContext] Products already synced (${count} products in database)`);
-        }
-      } catch (error) {
-        console.warn('[SyncContext] Error syncing products (non-critical):', error);
-        const count = await productService.getProductCount();
-        if (count > 0) {
-          console.log(`[SyncContext] Using ${count} cached products`);
-        }
-      }
-      
-      // Sync categories if needed
-      try {
-        const needsCategorySync = await categoryService.needsSync();
-        if (needsCategorySync && isConnected) {
-          console.log('[SyncContext] Syncing categories from server...');
-          const result = await categoryService.syncCategories();
-          if (result.success) {
-            console.log(`[SyncContext] Successfully synced ${result.count} categories`);
-          } else {
-            console.warn('[SyncContext] Failed to sync categories:', result.error);
-            const cachedCount = await categoryService.getCategoryCount();
-            if (cachedCount > 0) {
-              console.log(`[SyncContext] Using ${cachedCount} cached categories`);
-            }
+          if (count > 0) {
+            console.log(`[SyncContext] Using ${count} cached products`);
           }
-        } else {
-          const count = await categoryService.getCategoryCount();
-          console.log(`[SyncContext] Categories already synced (${count} categories in database)`);
         }
-      } catch (error) {
-        console.warn('[SyncContext] Error syncing categories (non-critical):', error);
-      }
-      
-      // Sync warehouses if needed
-      try {
-        const lastWarehouseSync = await warehouseService.getLastSyncTime();
-        const needsWarehouseSync = !lastWarehouseSync || (Date.now() - lastWarehouseSync > 24 * 60 * 60 * 1000);
-        
-        if (needsWarehouseSync && isConnected) {
-          console.log('[SyncContext] Syncing warehouses from server...');
-          const result = await warehouseService.syncWarehouses();
-          if (result.success) {
-            console.log(`[SyncContext] Successfully synced ${result.count} warehouses`);
+
+        // Sync categories if needed
+        try {
+          const needsCategorySync = await categoryService.needsSync();
+          if (needsCategorySync && isConnected) {
+            console.log('[SyncContext] Syncing categories from server...');
+            const result = await categoryService.syncCategories();
+            if (result.success) {
+              console.log(`[SyncContext] Successfully synced ${result.count} categories`);
+            } else {
+              console.warn('[SyncContext] Failed to sync categories:', result.error);
+              const cachedCount = await categoryService.getCategoryCount();
+              if (cachedCount > 0) {
+                console.log(`[SyncContext] Using ${cachedCount} cached categories`);
+              }
+            }
           } else {
-            console.warn('[SyncContext] Failed to sync warehouses:', result.error);
+            const count = await categoryService.getCategoryCount();
+            console.log(`[SyncContext] Categories already synced (${count} categories in database)`);
+          }
+        } catch (error) {
+          console.warn('[SyncContext] Error syncing categories (non-critical):', error);
+        }
+
+        // Sync warehouses if needed
+        try {
+          const lastWarehouseSync = await warehouseService.getLastSyncTime();
+          const needsWarehouseSync = !lastWarehouseSync || (Date.now() - lastWarehouseSync > 24 * 60 * 60 * 1000);
+
+          if (needsWarehouseSync && isConnected) {
+            console.log('[SyncContext] Syncing warehouses from server...');
+            const result = await warehouseService.syncWarehouses();
+            if (result.success) {
+              console.log(`[SyncContext] Successfully synced ${result.count} warehouses`);
+            } else {
+              console.warn('[SyncContext] Failed to sync warehouses:', result.error);
+              const warehouses = await warehouseService.getLocalWarehouses();
+              if (warehouses.length > 0) {
+                console.log(`[SyncContext] Using ${warehouses.length} cached warehouses`);
+              }
+            }
+          } else {
             const warehouses = await warehouseService.getLocalWarehouses();
-            if (warehouses.length > 0) {
-              console.log(`[SyncContext] Using ${warehouses.length} cached warehouses`);
-            }
+            console.log(`[SyncContext] Warehouses already synced (${warehouses.length} warehouses in database)`);
           }
-        } else {
-          const warehouses = await warehouseService.getLocalWarehouses();
-          console.log(`[SyncContext] Warehouses already synced (${warehouses.length} warehouses in database)`);
+        } catch (error) {
+          console.warn('[SyncContext] Error syncing warehouses (non-critical):', error);
         }
-      } catch (error) {
-        console.warn('[SyncContext] Error syncing warehouses (non-critical):', error);
-      }
-      
-      // Sync dealers if needed
-      try {
-        const needsDealerSync = await dealerService.needsSync();
-        
-        if (needsDealerSync && isConnected) {
-          console.log('[SyncContext] Syncing dealers from server...');
-          const result = await dealerService.syncDealers();
-          if (result.success) {
-            console.log(`[SyncContext] Successfully synced ${result.count} dealers`);
+
+        // Sync dealers if needed
+        try {
+          const needsDealerSync = await dealerService.needsSync();
+
+          if (needsDealerSync && isConnected) {
+            console.log('[SyncContext] Syncing dealers from server...');
+            const result = await dealerService.syncDealers();
+            if (result.success) {
+              console.log(`[SyncContext] Successfully synced ${result.count} dealers`);
+            } else {
+              console.warn('[SyncContext] Failed to sync dealers:', result.error);
+              const dealersData = await dealerService.getLocalDealers();
+              if (dealersData.length > 0) {
+                console.log(`[SyncContext] Using ${dealersData.length} cached dealers`);
+              }
+            }
           } else {
-            console.warn('[SyncContext] Failed to sync dealers:', result.error);
             const dealersData = await dealerService.getLocalDealers();
-            if (dealersData.length > 0) {
-              console.log(`[SyncContext] Using ${dealersData.length} cached dealers`);
-            }
+            console.log(`[SyncContext] Dealers already synced (${dealersData.length} dealers in database)`);
           }
-        } else {
-          const dealersData = await dealerService.getLocalDealers();
-          console.log(`[SyncContext] Dealers already synced (${dealersData.length} dealers in database)`);
+        } catch (error) {
+          console.warn('[SyncContext] Error syncing dealers (non-critical):', error);
         }
-      } catch (error) {
-        console.warn('[SyncContext] Error syncing dealers (non-critical):', error);
-      }
-      
-      // Sync bank accounts if needed
-      try {
-        const needsBankSync = await bankAccountService.needsSync();
-        
-        if (needsBankSync && isConnected) {
-          console.log('[SyncContext] Syncing bank accounts from server...');
-          const result = await bankAccountService.syncBankAccounts();
-          if (result.success) {
-            console.log(`[SyncContext] Successfully synced ${result.count} bank accounts`);
+
+        // Sync bank accounts if needed
+        try {
+          const needsBankSync = await bankAccountService.needsSync();
+
+          if (needsBankSync && isConnected) {
+            console.log('[SyncContext] Syncing bank accounts from server...');
+            const result = await bankAccountService.syncBankAccounts();
+            if (result.success) {
+              console.log(`[SyncContext] Successfully synced ${result.count} bank accounts`);
+            } else {
+              console.warn('[SyncContext] Failed to sync bank accounts:', result.error);
+              const count = await bankAccountService.getBankAccountCount();
+              if (count > 0) {
+                console.log(`[SyncContext] Using ${count} cached bank accounts`);
+              }
+            }
           } else {
-            console.warn('[SyncContext] Failed to sync bank accounts:', result.error);
             const count = await bankAccountService.getBankAccountCount();
-            if (count > 0) {
-              console.log(`[SyncContext] Using ${count} cached bank accounts`);
-            }
+            console.log(`[SyncContext] Bank accounts already synced (${count} bank accounts in database)`);
           }
-        } else {
-          const count = await bankAccountService.getBankAccountCount();
-          console.log(`[SyncContext] Bank accounts already synced (${count} bank accounts in database)`);
+        } catch (error) {
+          console.warn('[SyncContext] Error syncing bank accounts (non-critical):', error);
         }
-      } catch (error) {
-        console.warn('[SyncContext] Error syncing bank accounts (non-critical):', error);
+
+        await refresh();
+        setReady(true);
+      } catch (err) {
+        console.warn('[SyncContext] Initialization error (non-fatal):', err);
+        try { await refresh(); } catch (e) { /* ignore */ }
+        setReady(true);
       }
-      
-      await refresh();
-      setReady(true);
     })();
     return () => { mounted = false; };
   }, [refresh, isConnected]);

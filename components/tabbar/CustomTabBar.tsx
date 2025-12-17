@@ -5,9 +5,13 @@ import PawIcon from '@/assets/icons/paw.svg';
 import StoreIcon from '@/assets/icons/store.svg';
 import { Colors } from "@/constants/theme";
 import { useTabContext } from '@/context/TabContext';
+import { logout } from '@/store/slices/auth';
+import { useDispatch } from '@/store/store';
+import { logoutThunk } from '@/store/thunk/auth';
 import navbarStyles from '@/styles/navbarStyles';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { BottomTabBarProps } from '@react-navigation/bottom-tabs';
-import { useSegments } from 'expo-router';
+import { useRouter, useSegments } from 'expo-router';
 import React from 'react';
 import { Animated, Text, TouchableOpacity, View } from 'react-native';
 // Global render counter
@@ -95,6 +99,8 @@ const CustomTabBar = React.memo(({ state, descriptors, navigation }: BottomTabBa
   
   const { socialScrollToTop } = useTabContext();
   const segments = useSegments();
+  const dispatch = useDispatch();
+  const router = useRouter();
   
   // Use a stable state to prevent flicker during multiple renders
   const [stableIndex, setStableIndex] = React.useState(state.index);
@@ -188,6 +194,21 @@ const CustomTabBar = React.memo(({ state, descriptors, navigation }: BottomTabBa
             target: route.key,
             canPreventDefault: true,
           });
+
+          // Special handling for logout tab: perform immediate logout and navigate to auth
+          if (route.name === 'logout') {
+            // Attempt server logout but don't block UI
+            try {
+              dispatch(logoutThunk()).catch(() => {});
+            } catch (e) {
+              /* ignore */
+            }
+
+            try { AsyncStorage.removeItem('SIGNED_IN'); } catch (e) { /* ignore */ }
+            try { dispatch(logout()); } catch (e) { /* ignore */ }
+            try { router.replace('/(auth)/sign-in'); } catch (e) { /* ignore */ }
+            return;
+          }
 
           // Special handling for social tab - scroll to top and refresh if already focused
           if (route.name === 'social' && isFocused) {

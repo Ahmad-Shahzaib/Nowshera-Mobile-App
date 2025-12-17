@@ -28,12 +28,12 @@ if (!BASE_URL) {
         'Make sure you have set NEXT_PUBLIC_BASE_URL in your .env or Expo `extra` (app.json / app.config.js), and restart the bundler with cache cleared: `expo start -c`.');
 }
 export function getAxiosInstance() {
-    if (!BASE_URL) {
-        throw new Error('[lib/axios] NEXT_PUBLIC_BASE_URL is not set. Set `NEXT_PUBLIC_BASE_URL` in your environment or Expo `extra` (app.json / app.config.js), then restart the bundler with cache cleared: `expo start -c`.');
-    }
+    // If BASE_URL is not set, don't throw — fall back to relative URLs so
+    // the app doesn't crash/reload in development. We already warn above.
+    const base = BASE_URL ? `${BASE_URL}/api` : '/api';
 
     const instance = axios.create({
-        baseURL: `${BASE_URL}/api`,
+        baseURL: base,
         timeout: 10000,
         headers: {
             "Content-Type": "application/json",

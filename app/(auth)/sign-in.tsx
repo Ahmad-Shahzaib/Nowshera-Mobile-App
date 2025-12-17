@@ -3,10 +3,9 @@ import useResponsive from '@/hooks/useResponsive';
 import { useDispatch } from '@/store/store';
 import { login } from '@/store/thunk/auth';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useRouter } from 'expo-router'; // ✅ import router
+import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
-    Alert,
     KeyboardAvoidingView,
     Platform,
     SafeAreaView,
@@ -16,7 +15,7 @@ import {
     TextInput,
     TouchableOpacity,
     useColorScheme,
-    View,
+    View
 } from 'react-native';
 
 export default function LoginScreen() {
@@ -26,7 +25,7 @@ export default function LoginScreen() {
     const colorScheme = useColorScheme() ?? 'light';
     const theme = Colors[colorScheme];
     const { fontSize, horizontalScale, vertical, width } = useResponsive();
-    const router = useRouter(); // ✅ initialize router
+    const router = useRouter();  
 
     const dispatch = useDispatch();
 
@@ -36,17 +35,22 @@ export default function LoginScreen() {
             // dispatch login thunk; thunk persists token to AsyncStorage
             await dispatch(login({ email: email.trim(), password } as any)).unwrap();
 
-            // mark signed-in in local storage for any layout logic
+            // mark signed-in in local storage for layout logic and then navigate
             try {
                 await AsyncStorage.setItem('SIGNED_IN', 'true');
-            } catch {
-                // ignore
-            }
+                setEmail('');
+                setPassword('');
 
-            Alert.alert('Success', 'Logged in successfully');
-            setEmail('');
-            setPassword('');
-            router.push('/customer');
+                // Navigate after the storage write completes. Small timeout avoids
+                // potential race with RootLayout's navigation logic.
+                setTimeout(() => {
+                    router.replace('/(tabs)/customer');
+                }, 50);
+            } catch (e) {
+                // If storage fails, still attempt navigation
+                console.warn('Failed to persist SIGNED_IN flag', e);
+                router.replace('/(tabs)/customer');
+            }
         } catch (err: any) {
             const message = err || 'Invalid email or password';
             setError(message);

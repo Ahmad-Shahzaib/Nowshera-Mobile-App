@@ -49,6 +49,12 @@ export default function TabLayout() {
             options={{ headerShown: false, title: 'Invoice' }}
           />
 
+          
+          <Tabs.Screen
+            name="logout"
+            options={{ headerShown: false, title: 'Logout' }}
+          />
+
           {/* <Tabs.Screen
             name="ledger"
             options={{ headerShown: false, title: 'Ledger' }}
