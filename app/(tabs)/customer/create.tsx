@@ -2,9 +2,11 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors } from '@/constants/theme';
 import { useSync } from '@/context/SyncContext';
+import useNetwork from '@/hooks/useNetwork';
+import { customerService } from '@/services/customerService';
 import { useRouter } from 'expo-router';
 import React, { useCallback, useState } from 'react';
-import { ScrollView, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, ScrollView, StyleSheet, TextInput, TouchableOpacity, View } from 'react-native';
 
 // Hide this route from the bottom tab bar
 export const options = {
@@ -13,32 +15,143 @@ export const options = {
 
 export default function CreateCustomer() {
   const router = useRouter();
-  const { addCustomer } = useSync();
+  const { addCustomer, refresh } = useSync();
+  const { isConnected } = useNetwork();
 
   const [name, setName] = useState('');
   const [contact, setContact] = useState('');
   const [email, setEmail] = useState('');
   const [taxNumber, setTaxNumber] = useState('');
   const [openingBalance, setOpeningBalance] = useState('0');
+  const [openingBalanceType, setOpeningBalanceType] = useState<'Dr' | 'Cr'>('Dr');
   const [address, setAddress] = useState('');
   const [city, setCity] = useState('');
   const [stateVal, setStateVal] = useState('');
   const [country, setCountry] = useState('');
   const [zip, setZip] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   const handleCancel = useCallback(() => router.back(), [router]);
 
-  const handleCreate = useCallback(() => {
-    (async () => {
-      const payload = { name, contact, email, taxNumber, openingBalance, address, city, state: stateVal, country, zip };
-      try {
-        await addCustomer(payload);
-      } catch (err) {
-        console.warn('Failed to save customer locally', err);
+  const handleCreate = useCallback(async () => {
+    // Basic validation
+    if (!name.trim()) {
+      Alert.alert('Validation Error', 'Name is required');
+      return;
+    }
+
+    if (!contact.trim()) {
+      Alert.alert('Validation Error', 'Contact is required');
+      return;
+    }
+
+    setIsSubmitting(true);
+
+    try {
+      // Prepare the payload according to the API structure
+      const payload = {
+        name: name.trim(),
+        contact: contact.trim(),
+        email: email.trim(),
+        tax_number: taxNumber.trim() || null,
+        balance: openingBalance.trim() || '0',
+        opening_balance_type: openingBalanceType,
+        created_by: 1,
+        warehouse_id: 1,
+        
+        billing_name: name.trim(),
+        billing_country: country.trim() || 'Pakistan',
+        billing_state: stateVal.trim() || null,
+        billing_city: city.trim(),
+        billing_phone: contact.trim(),
+        billing_zip: zip.trim() || null,
+        billing_address: address.trim(),
+        
+        shipping_name: name.trim(),
+        shipping_country: country.trim() || 'Pakistan',
+        shipping_state: stateVal.trim() || null,
+        shipping_city: city.trim(),
+        shipping_phone: contact.trim(),
+        shipping_zip: zip.trim() || null,
+        shipping_address: address.trim(),
+        
+        type: 'Customer',
+        lang: 'en',
+      };
+
+      // If we have internet, attempt to create on server first and mark as synced
+      if (isConnected) {
+        try {
+          const response = await customerService.createCustomer(payload);
+
+          // Save server-backed customer locally as synced
+          await addCustomer({
+            serverId: String(response.id ?? response.customer_id ?? ''),
+            name: response.name,
+            contact: response.contact,
+            email: response.email,
+            taxNumber: response.tax_number,
+            openingBalance: response.balance,
+            address: response.billing_address,
+            city: response.billing_city,
+            state: response.billing_state,
+            country: response.billing_country,
+            zip: response.billing_zip,
+            synced: 1,
+          });
+
+          await refresh();
+          Alert.alert('Success', 'Customer created successfully', [
+            { text: 'OK', onPress: () => router.back() }
+          ]);
+        } catch (e: any) {
+          // If server call fails, fall back to saving locally as unsynced
+          console.warn('[CreateCustomer] server create failed, saving locally', e);
+          await addCustomer({
+            name: payload.billing_name,
+            contact: payload.billing_phone,
+            email: payload.email,
+            taxNumber: payload.tax_number,
+            openingBalance: openingBalance,
+            address: payload.billing_address,
+            city: payload.billing_city,
+            state: payload.billing_state,
+            country: payload.billing_country,
+            zip: payload.billing_zip,
+            synced: 0,
+          });
+          await refresh();
+          Alert.alert('Saved offline', 'Customer saved locally and will be synced when online.', [
+            { text: 'OK', onPress: () => router.back() }
+          ]);
+        }
+      } else {
+        // Offline: save locally as unsynced
+        await addCustomer({
+          name: payload.billing_name,
+          contact: payload.billing_phone,
+          email: payload.email,
+          taxNumber: payload.tax_number,
+          openingBalance: openingBalance,
+          address: payload.billing_address,
+          city: payload.billing_city,
+          state: payload.billing_state,
+          country: payload.billing_country,
+          zip: payload.billing_zip,
+          synced: 0,
+        });
+        await refresh();
+        Alert.alert('Saved offline', 'Customer saved locally and will be synced when online.', [
+          { text: 'OK', onPress: () => router.back() }
+        ]);
       }
-      router.back();
-    })();
-  }, [name, contact, email, taxNumber, openingBalance, address, city, stateVal, country, zip, router]);
+    } catch (err: any) {
+      console.error('Failed to create customer:', err);
+      Alert.alert('Error', err.message || 'Failed to create customer. Please try again.');
+    } finally {
+      setIsSubmitting(false);
+    }
+  }, [name, contact, email, taxNumber, openingBalance, address, city, stateVal, country, zip, addCustomer, refresh, router]);
 
   return (
     <ThemedView style={styles.safe}>
@@ -105,6 +218,31 @@ export default function CreateCustomer() {
           keyboardType="numeric"
         />
 
+        <ThemedText style={styles.label}>Balance Type</ThemedText>
+        <View style={styles.radioGroup}>
+          <TouchableOpacity 
+            style={styles.radioOption} 
+            onPress={() => setOpeningBalanceType('Dr')}
+            accessibilityLabel="Select Debit"
+          >
+            <View style={[styles.radioCircle, openingBalanceType === 'Dr' && styles.radioCircleSelected]}>
+              {openingBalanceType === 'Dr' && <View style={styles.radioCircleInner} />}
+            </View>
+            <ThemedText style={styles.radioLabel}>Dr</ThemedText>
+          </TouchableOpacity>
+          
+          <TouchableOpacity 
+            style={styles.radioOption} 
+            onPress={() => setOpeningBalanceType('Cr')}
+            accessibilityLabel="Select Credit"
+          >
+            <View style={[styles.radioCircle, openingBalanceType === 'Cr' && styles.radioCircleSelected]}>
+              {openingBalanceType === 'Cr' && <View style={styles.radioCircleInner} />}
+            </View>
+            <ThemedText style={styles.radioLabel}>Cr</ThemedText>
+          </TouchableOpacity>
+        </View>
+
         <ThemedText style={styles.section}>Billing Address</ThemedText>
         <TextInput
           style={[styles.input, styles.textarea]}
@@ -138,11 +276,17 @@ export default function CreateCustomer() {
         </View>
 
         <View style={styles.actionsRow}>
-          <TouchableOpacity style={[styles.btn, styles.cancelBtn]} onPress={handleCancel}>
+          <TouchableOpacity style={[styles.btn, styles.cancelBtn]} onPress={handleCancel} disabled={isSubmitting}>
             <ThemedText style={styles.cancelText}>Cancel</ThemedText>
           </TouchableOpacity>
-          <TouchableOpacity style={[styles.btn, styles.saveBtn]} onPress={handleCreate}>
-            <ThemedText style={styles.saveText}>Create</ThemedText>
+          <TouchableOpacity 
+            style={[styles.btn, styles.saveBtn, isSubmitting && styles.disabledBtn]} 
+            onPress={handleCreate}
+            disabled={isSubmitting}
+          >
+            <ThemedText style={styles.saveText}>
+              {isSubmitting ? 'Creating...' : 'Create'}
+            </ThemedText>
           </TouchableOpacity>
         </View>
       </ScrollView>
@@ -176,6 +320,13 @@ const styles = StyleSheet.create({
   btn: { paddingVertical: 10, paddingHorizontal: 16, borderRadius: 8, marginLeft: 8, minWidth: 88, alignItems: 'center' },
   cancelBtn: { backgroundColor: Colors.light.icon },
   saveBtn: { backgroundColor: Colors.light.tint },
+  disabledBtn: { backgroundColor: Colors.light.icon, opacity: 0.6 },
   cancelText: { color: '#fff', fontWeight: '600' },
   saveText: { color: '#fff', fontWeight: '600' },
+  radioGroup: { flexDirection: 'row', marginTop: 4, marginBottom: 8 },
+  radioOption: { flexDirection: 'row', alignItems: 'center', marginRight: 24 },
+  radioCircle: { width: 20, height: 20, borderRadius: 10, borderWidth: 2, borderColor: Colors.light.icon, alignItems: 'center', justifyContent: 'center', marginRight: 8 },
+  radioCircleSelected: { borderColor: Colors.light.tint },
+  radioCircleInner: { width: 10, height: 10, borderRadius: 5, backgroundColor: Colors.light.tint },
+  radioLabel: { fontSize: 14, color: Colors.light.text },
 });

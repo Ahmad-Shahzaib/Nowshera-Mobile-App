@@ -1,10 +1,12 @@
 import { useRouter } from 'expo-router';
-import React, { useCallback, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Dimensions,
   FlatList,
   Platform,
+  RefreshControl,
   StyleSheet,
   TouchableOpacity,
   View,
@@ -13,96 +15,140 @@ import {
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors } from '@/constants/theme';
-
-type Customer = {
-  id: string;
-  name: string;
-  contact: string;
-  email: string;
-  openingBalance: string;
-  balance: string;
-};
-
-const customers: Customer[] = [
-  {
-    id: '#CUST00001',
-    name: 'Imran jenral store',
-    contact: '+923007456340',
-    email: 'Imran@gmail.com',
-    openingBalance: '39,528.00 Rs.',
-    balance: '162,006.00 Rs.',
-  },
-  {
-    id: '#CUST00002',
-    name: 'Abid 1 Super Store',
-    contact: '+923066410520',
-    email: 'abid@gmail.com',
-    openingBalance: '0.00 Rs.',
-    balance: '5,000.00 Rs.',
-  },
-  {
-    id: '#CUST00003',
-    name: 'Abid 2 Super Store',
-    contact: '+923085886077',
-    email: 'shahid@gmail.com',
-    openingBalance: '0.00 Rs.',
-    balance: '0.00 Rs.',
-  },
-  {
-    id: '#CUST00004',
-    name: 'Baba Riaz Kryana Store',
-    contact: '+920000000000',
-    email: 'baba@gmail.com',
-    openingBalance: '0.00 Rs.',
-    balance: '0.00 Rs.',
-  },
-  {
-    id: '#CUST00005',
-    name: 'Azhar Kryana Store',
-    contact: '+923099403223',
-    email: 'azhar@gmail.com',
-    openingBalance: '4,736.00 Rs.',
-    balance: '6,717.68 Rs.',
-  },
-  {
-    id: '#CUST00006',
-    name: 'Hasam Kryana Store',
-    contact: '+923088660164',
-    email: 'hasam@gmail.com',
-    openingBalance: '0.00 Rs.',
-    balance: '0.00 Rs.',
-  },
-];
+import { useSync } from '@/context/SyncContext';
+import { customerService } from '@/services/customerService';
+import { Customer } from '@/types/customer';
 
 export default function Customers() {
   const width = Dimensions.get('window').width;
   const router = useRouter();
+  const { unsyncedCount, isSyncing, syncNow, isOnline } = useSync();
 
-  // pagination state
-  const PAGE_SIZE = 4;
+  // State management
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // Pagination state
+  const PAGE_SIZE = 10;
   const [page, setPage] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
 
+  // Fetch customers from service (offline-first)
+  const fetchCustomers = useCallback(async (showLoader = true) => {
+    try {
+      if (showLoader) {
+        setLoading(true);
+      }
+      setError(null);
+      
+      const data = await customerService.getAllCustomers();
+      setCustomers(data);
+    } catch (err: any) {
+      console.error('Error fetching customers:', err);
+      setError(err.message || 'Failed to load customers');
+      Alert.alert('Error', err.message || 'Failed to load customers');
+    } finally {
+      if (showLoader) {
+        setLoading(false);
+      }
+      setRefreshing(false);
+    }
+  }, []);
+
+  // Load customers on mount
+  useEffect(() => {
+    fetchCustomers();
+  }, [fetchCustomers]);
+
+  // Pull to refresh
+  const onRefresh = useCallback(async () => {
+    setRefreshing(true);
+    setPage(1);
+    await fetchCustomers(false);
+    
+    // Also trigger sync if we have unsynced items
+    if (unsyncedCount > 0 && isOnline) {
+      await syncNow();
+    }
+  }, [fetchCustomers, unsyncedCount, isOnline, syncNow]);
+
+  // Manual sync
+  const handleSync = useCallback(async () => {
+    if (!isOnline) {
+      Alert.alert('Offline', 'Please connect to the internet to sync data');
+      return;
+    }
+
+    if (unsyncedCount === 0) {
+      Alert.alert('All synced', 'All data is already synchronized');
+      return;
+    }
+
+    const result = await syncNow();
+    if (result.success) {
+      Alert.alert('Success', `Synced ${result.syncedCount} customer(s)`);
+      await fetchCustomers(false);
+    } else {
+      Alert.alert('Sync Failed', result.error || 'Failed to sync data');
+    }
+  }, [unsyncedCount, isOnline, syncNow, fetchCustomers]);
+
+  // Delete customer
+  const handleDeleteCustomer = useCallback(async (customerId: number, customerName: string) => {
+    Alert.alert(
+      'Delete Customer',
+      `Are you sure you want to delete "${customerName}"?`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // Delete using offline-first service
+              await customerService.deleteCustomer(customerId);
+              
+              // Immediately update UI by removing the customer from state
+              setCustomers(prevCustomers => 
+                prevCustomers.filter(customer => customer.id !== customerId)
+              );
+              
+              // Show success message
+              Alert.alert('Success', 'Customer deleted successfully');
+            } catch (err: any) {
+              console.error('Delete error:', err);
+              Alert.alert('Error', err.message || 'Failed to delete customer');
+            }
+          },
+        },
+      ]
+    );
+  }, []);
+
+  // Paginated data
   const data = useMemo(() => {
     return customers.slice(0, page * PAGE_SIZE);
-  }, [page]);
+  }, [customers, page]);
 
   const loadMore = useCallback(() => {
     if (data.length >= customers.length || loadingMore) return;
     setLoadingMore(true);
-    // simulate async load
     setTimeout(() => {
       setPage((p) => p + 1);
       setLoadingMore(false);
-    }, 600);
-  }, [data.length, loadingMore]);
+    }, 300);
+  }, [data.length, customers.length, loadingMore]);
 
-  const renderItem = useCallback(({ item }: { item: typeof customers[number] }) => (
-    <TouchableOpacity key={item.id} activeOpacity={0.9} style={styles.rowWrapper}>
-      <ThemedView style={[styles.card, { width: width - 24 }] }>
+  const renderItem = useCallback(({ item }: { item: Customer }) => (
+    <TouchableOpacity activeOpacity={0.9} style={styles.rowWrapper}>
+      <ThemedView style={[styles.card, { width: width - 24 }]}>
         <View style={styles.left}>
           <TouchableOpacity style={styles.idChip} activeOpacity={0.85}>
-            <ThemedText type="link" style={styles.idText}>{item.id}</ThemedText>
+            <ThemedText type="link" style={styles.idText}>
+              #{item.customer_id ? item.customer_id.toString().padStart(8, '0') : 'Pending'}
+            </ThemedText>
           </TouchableOpacity>
 
           <ThemedText type="defaultSemiBold" style={styles.name}>{item.name}</ThemedText>
@@ -111,45 +157,83 @@ export default function Customers() {
 
         <View style={styles.right}>
           <View style={styles.balanceBlock}>
-            <ThemedText type="subtitle" style={styles.smallLabel}>Opening</ThemedText>
-            <ThemedText type="defaultSemiBold" style={styles.balance}>{item.openingBalance}</ThemedText>
-          </View>
-
-          <View style={styles.balanceBlock}>
             <ThemedText type="subtitle" style={styles.smallLabel}>Balance</ThemedText>
-            <ThemedText type="defaultSemiBold" style={styles.balance}>{item.balance}</ThemedText>
+            <ThemedText type="defaultSemiBold" style={styles.balance}>
+              {item.balance || '0'} Rs.
+            </ThemedText>
           </View>
 
           <View style={styles.actions}>
-            <TouchableOpacity style={[styles.iconBtn, { backgroundColor: '#f9b233' }]}>
+            <TouchableOpacity 
+              style={[styles.iconBtn, { backgroundColor: '#f9b233' }]}
+              onPress={() => item.id && router.push({ pathname: '/(tabs)/customer/[id]', params: { id: item.id.toString() } })}
+              disabled={!item.id}
+            >
               <ThemedText style={styles.actionIcon}>👁️</ThemedText>
             </TouchableOpacity>
             <TouchableOpacity
               style={[styles.iconBtn, { backgroundColor: '#16a085' }]}
-              onPress={() => router.push({ pathname: '/(tabs)/customer/[id]', params: { id: item.id } })}
+              onPress={() => item.id && router.push({ pathname: '/(tabs)/customer/edit/[id]', params: { id: item.id.toString() } })}
+              disabled={!item.id}
             >
               <ThemedText style={styles.actionIcon}>✏️</ThemedText>
             </TouchableOpacity>
-            <TouchableOpacity style={[styles.iconBtn, { backgroundColor: '#ff4d6d' }]}>
+            <TouchableOpacity 
+              style={[styles.iconBtn, { backgroundColor: '#ff4d6d' }]}
+              onPress={() => item.id && handleDeleteCustomer(item.id, item.name)}
+              disabled={!item.id}
+            >
               <ThemedText style={styles.actionIcon}>🗑️</ThemedText>
             </TouchableOpacity>
           </View>
         </View>
       </ThemedView>
     </TouchableOpacity>
-  ), [width]);
+  ), [width, router, handleDeleteCustomer]);
 
   const ListHeader = () => (
-    <View style={[styles.headerWrap, styles.headerRow]}>
-      <ThemedText type="title" style={styles.header}>Customers</ThemedText>
+    <View>
+      <View style={[styles.headerWrap, styles.headerRow]}>
+        <ThemedText type="title" style={styles.header}>Customers</ThemedText>
 
-      <TouchableOpacity
-        activeOpacity={0.85}
-        style={styles.addButton}
-        onPress={() => router.push({ pathname: '/(tabs)/customer/create' })}
-      >
-        <ThemedText type="defaultSemiBold" style={styles.addButtonText}>+ Add Customer</ThemedText>
-      </TouchableOpacity>
+        <TouchableOpacity
+          activeOpacity={0.85}
+          style={styles.addButton}
+          onPress={() => router.push({ pathname: '/(tabs)/customer/create' })}
+        >
+          <ThemedText type="defaultSemiBold" style={styles.addButtonText}>+ Add Customer</ThemedText>
+        </TouchableOpacity>
+      </View>
+
+      {/* Sync Status Bar */}
+      <View style={styles.syncStatusBar}>
+        <View style={styles.statusLeft}>
+          <View style={[styles.statusDot, { backgroundColor: isOnline ? '#10b981' : '#ef4444' }]} />
+          <ThemedText style={styles.statusText}>
+            {isOnline ? 'Online' : 'Offline'}
+          </ThemedText>
+          {unsyncedCount > 0 && (
+            <View style={styles.unsyncedBadge}>
+              <ThemedText style={styles.unsyncedText}>
+                {unsyncedCount} pending
+              </ThemedText>
+            </View>
+          )}
+          {isSyncing && (
+            <ActivityIndicator size="small" color={Colors.light.tint} style={{ marginLeft: 8 }} />
+          )}
+        </View>
+        
+        {unsyncedCount > 0 && isOnline && !isSyncing && (
+          <TouchableOpacity 
+            style={styles.syncButton}
+            onPress={handleSync}
+            activeOpacity={0.7}
+          >
+            <ThemedText style={styles.syncButtonText}>🔄 Sync Now</ThemedText>
+          </TouchableOpacity>
+        )}
+      </View>
     </View>
   );
 
@@ -160,18 +244,40 @@ export default function Customers() {
   );
 
   return (
-    <View >
-      <FlatList
-        data={data}
-        keyExtractor={(item) => item.id}
-        renderItem={renderItem}
-        contentContainerStyle={styles.container}
-        showsVerticalScrollIndicator={false}
-        ListHeaderComponent={ListHeader}
-        ListFooterComponent={ListFooter}
-        onEndReachedThreshold={0.5}
-        onEndReached={loadMore}
-      />
+    <View>
+      {loading && !refreshing ? (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color={Colors.light.tint} />
+          <ThemedText style={styles.loadingText}>Loading customers...</ThemedText>
+        </View>
+      ) : error && customers.length === 0 ? (
+        <View style={styles.errorContainer}>
+          <ThemedText style={styles.errorText}>⚠️ {error}</ThemedText>
+          <TouchableOpacity style={styles.retryButton} onPress={() => fetchCustomers()}>
+            <ThemedText style={styles.retryButtonText}>Retry</ThemedText>
+          </TouchableOpacity>
+        </View>
+      ) : (
+        <FlatList
+          data={data}
+          keyExtractor={(item, index) => item.id ? item.id.toString() : `customer-${index}`}
+          renderItem={renderItem}
+          contentContainerStyle={styles.container}
+          showsVerticalScrollIndicator={false}
+          ListHeaderComponent={ListHeader}
+          ListFooterComponent={ListFooter}
+          onEndReachedThreshold={0.5}
+          onEndReached={loadMore}
+          refreshControl={
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              colors={[Colors.light.tint]}
+              tintColor={Colors.light.tint}
+            />
+          }
+        />
+      )}
     </View>
   );
 }
@@ -180,6 +286,41 @@ const styles = StyleSheet.create({
   safe: { flex: 1 },
   // add extra bottom padding so last card isn't hidden behind bottom tab bar
   container: { paddingVertical: 12, paddingHorizontal: 12, paddingBottom: 100 },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 60,
+  },
+  loadingText: {
+    marginTop: 12,
+    color: '#6b6f73',
+    fontSize: 14,
+  },
+  errorContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingVertical: 60,
+    paddingHorizontal: 24,
+  },
+  errorText: {
+    color: '#ff4d6d',
+    fontSize: 14,
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  retryButton: {
+    backgroundColor: Colors.light.tint,
+    paddingVertical: 10,
+    paddingHorizontal: 20,
+    borderRadius: 8,
+  },
+  retryButtonText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
   card: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -209,6 +350,57 @@ const styles = StyleSheet.create({
     borderRadius: 8,
   },
   addButtonText: { color: '#fff', fontSize: 13 },
+  syncStatusBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: '#f8fafc',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    marginTop: 12,
+    borderWidth: 1,
+    borderColor: '#e2e8f0',
+  },
+  statusLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    flex: 1,
+  },
+  statusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 8,
+  },
+  statusText: {
+    fontSize: 13,
+    color: '#475569',
+    fontWeight: '500',
+  },
+  unsyncedBadge: {
+    backgroundColor: '#fef3c7',
+    paddingVertical: 3,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    marginLeft: 8,
+  },
+  unsyncedText: {
+    fontSize: 11,
+    color: '#92400e',
+    fontWeight: '600',
+  },
+  syncButton: {
+    backgroundColor: Colors.light.tint,
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+  },
+  syncButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
   left: { flex: 1, paddingRight: 10 },
   right: { alignItems: 'flex-end', justifyContent: 'center' },
   idChip: {
@@ -233,7 +425,7 @@ const styles = StyleSheet.create({
     color: '#6b6f73',
     fontSize: 13,
   },
-  balanceBlock: { alignItems: 'flex-end' },
+  balanceBlock: { alignItems: 'flex-end', marginBottom: 8 },
   smallLabel: { color: '#8f9598', fontSize: 11 },
   balance: { fontSize: 14 },
   actions: { flexDirection: 'row', marginTop: 8 },

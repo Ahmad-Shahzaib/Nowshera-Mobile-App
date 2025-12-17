@@ -5,7 +5,7 @@ import { useColorScheme } from '@/hooks/use-color-scheme';
 import { ReduxProvider } from '@/store/Provider';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native';
-import { Slot, Stack, useRouter, useSegments } from 'expo-router';
+import { Stack, useRouter, useSegments } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useEffect, useMemo, useState } from 'react';
 import { StyleSheet } from 'react-native';
@@ -77,10 +77,8 @@ export default function RootLayout() {
               {isSignedIn && !isAuthGroup && <NetworkHeader />}
             </SafeAreaView>
 
-            {/* ✅ ALWAYS render Stack or Slot */}
-            <Stack screenOptions={{ headerShown: false }}>
-              <Slot />
-            </Stack>
+            {/* ✅ Use Stack only */}
+            <Stack screenOptions={{ headerShown: false }} />
           </SyncProvider>
         </ThemeProvider>
       </ReduxProvider>

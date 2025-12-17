@@ -1,14 +1,23 @@
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors } from '@/constants/theme';
+import { useSync } from '@/context/SyncContext';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import useResponsive from '@/hooks/useResponsive';
+import { bankAccountService } from '@/services/bankAccountService';
+import { invoiceService } from '@/services/invoiceService';
+import type { BankAccountRow } from '@/services/localDatabase';
+import { categoryService, productService } from '@/services/productService';
+import { warehouseService } from '@/services/warehouseService';
+import type { Category, Product } from '@/types/product';
+import type { Warehouse } from '@/types/warehouse';
 import { MaterialIcons } from '@expo/vector-icons';
+import BottomSheet, { BottomSheetBackdrop, BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { useRouter } from 'expo-router';
-import React, { useCallback, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
-  FlatList,
+  Keyboard,
   Modal,
   Pressable,
   ScrollView,
@@ -18,6 +27,7 @@ import {
   TouchableOpacity,
   View
 } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 type ProductItem = {
@@ -40,44 +50,6 @@ type PaymentDetail = {
   reference: string;
 };
 
-const SAMPLE_CUSTOMERS = [
-  'Yasir Foam Center',
-  'Master Display Timber [Zubair]',
-  'Acme Supplies',
-  'Al-Noor Electronics',
-  'Bright Furniture Works',
-  'TechZone Computers',
-  'Smart Home Solutions',
-  'City Light Traders',
-  'Metro Construction Co.',
-  'Premier Paints & Coatings',
-];
-
-const SAMPLE_CATEGORIES = [
-  'Foam Products',
-  'Timber & Wood',
-  'Electronics',
-  'Furniture',
-  'Construction Materials',
-  'Hardware',
-  'Paints & Coatings',
-];
-
-const SAMPLE_SHOPS = [
-  'Main Shop',
-  'Outlet A',
-  'Outlet B',
-  'MASHAALLAH FOAM ABDALI ROAD',
-  'Anas Foam House',
-];
-
-const SAMPLE_ACCOUNTS = [
-  'Cash Account',
-  'Bank Account - HBL',
-  'Bank Account - UBL',
-  'Petty Cash',
-];
-
 export default function CreateInvoice() {
   const resp = useResponsive();
   const bg = useThemeColor({}, 'background');
@@ -85,57 +57,90 @@ export default function CreateInvoice() {
   const tint = useThemeColor({}, 'tint');
   const icon = useThemeColor({}, 'icon');
   const router = useRouter();
+  const { customers, dealers } = useSync();
 
   // Refs for scrolling
   const mainScrollViewRef = useRef<ScrollView>(null);
-  const productsListRef = useRef<FlatList>(null);
-  const paymentsListRef = useRef<FlatList>(null);
+
+  // Bottom sheet refs
+  const addProductBottomSheetRef = useRef<BottomSheet>(null);
+  const addPaymentBottomSheetRef = useRef<BottomSheet>(null);
+
+  // Bottom sheet snap points
+  const productSnapPoints = useMemo(() => ['90%'], []);
+  const paymentSnapPoints = useMemo(() => ['90%'], []);
 
   const stylesLocal = createStyles(resp, { bg, text, tint, icon });
 
   // Form state
   const [customerType, setCustomerType] = useState<'customer' | 'walk-in' | 'dealers'>('customer');
   const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null);
+  const [selectedWarehouse, setSelectedWarehouse] = useState<Warehouse | null>(null);
   const [walkInCustomerName, setWalkInCustomerName] = useState('');
   const [walkInContactNumber, setWalkInContactNumber] = useState('');
   const [walkInAddress, setWalkInAddress] = useState('');
   const [issueDate, setIssueDate] = useState(new Date());
   const [dueDate, setDueDate] = useState(new Date());
   const [deliveryStatus, setDeliveryStatus] = useState('Pending');
-  const [invoiceNumber, setInvoiceNumber] = useState('#INVO00013');
+  const [invoiceNumber, setInvoiceNumber] = useState('');
   const [referenceNumber, setReferenceNumber] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
   const [masterDiscount, setMasterDiscount] = useState('');
-  const [stockType, setStockType] = useState<'send-now' | 'multi-ship'>('send-now');
+  const [isLoadingInvoiceNumber, setIsLoadingInvoiceNumber] = useState(false);
+  const [invoiceNumberDisabled, setInvoiceNumberDisabled] = useState(true);
 
   // Products
-  const [products, setProducts] = useState<ProductItem[]>([
-    {
-      id: '1',
-      product: 'مولٹی فوم',
-      shop: '',
-      quantity: '1',
-      rate: '423.00',
-      discount: '100.00 %',
-      tax: '0',
-      description: 'فوم کی اقسام اور فوم کمپنی',
-      price: '1,692.00',
-    },
-  ]);
+  const [products, setProducts] = useState<ProductItem[]>([]);
 
   // Payment details
-  const [paymentDetails, setPaymentDetails] = useState<PaymentDetail[]>([
-    { id: '1', amount: '0', account: '', date: new Date().toLocaleDateString(), reference: '' },
-  ]);
+  const [paymentDetails, setPaymentDetails] = useState<PaymentDetail[]>([]);
 
   // Modal states
   const [showCustomerModal, setShowCustomerModal] = useState(false);
+  const [showWarehouseModal, setShowWarehouseModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
   const [showDeliveryModal, setShowDeliveryModal] = useState(false);
   const [showDateModal, setShowDateModal] = useState(false);
   const [dateModalType, setDateModalType] = useState<'issue' | 'due'>('issue');
   const [showAccountModal, setShowAccountModal] = useState(false);
-  const [selectedPaymentIndex, setSelectedPaymentIndex] = useState(0);
+  const [selectedPaymentIndex, setSelectedPaymentIndex] = useState(-1);
+
+  // Temporary product/payment for modal
+  const [tempProduct, setTempProduct] = useState<ProductItem>({
+    id: '',
+    product: '',
+    shop: '',
+    quantity: '1',
+    rate: '0',
+    discount: '0',
+    tax: '0',
+    description: '',
+    price: '0',
+  });
+
+  const [tempPayment, setTempPayment] = useState<PaymentDetail>({
+    id: '',
+    amount: '0',
+    account: '',
+    date: new Date().toLocaleDateString(),
+    reference: '',
+  });
+
+  // Product search state
+  const [productSearchQuery, setProductSearchQuery] = useState('');
+  const [productSuggestions, setProductSuggestions] = useState<Product[]>([]);
+  const [showProductSuggestions, setShowProductSuggestions] = useState(false);
+  const [isSearchingProducts, setIsSearchingProducts] = useState(false);
+
+  // Categories state
+  const [categories, setCategories] = useState<Category[]>([]);
+
+  // Warehouses state
+  const [warehouses, setWarehouses] = useState<Warehouse[]>([]);
+
+  // Bank accounts state
+  const [bankAccounts, setBankAccounts] = useState<BankAccountRow[]>([]);
+  const [filteredBankAccounts, setFilteredBankAccounts] = useState<BankAccountRow[]>([]);
 
   // Calculate totals with memoization
   const calculateTotals = useCallback(() => {
@@ -166,8 +171,145 @@ export default function CreateInvoice() {
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
+  // Fetch next invoice number when warehouse is selected
+  const fetchNextInvoiceNumber = async (warehouseId: number) => {
+    try {
+      setIsLoadingInvoiceNumber(true);
+      const { getAxiosInstance } = await import('@/lib/axios');
+      const axiosInstance = getAxiosInstance();
+      const response = await axiosInstance.get(`/invoice/next-number/${warehouseId}`);
+
+      if (response.data?.status && response.data?.data?.formatted_number) {
+        setInvoiceNumber(response.data.data.formatted_number);
+        setInvoiceNumberDisabled(false);
+        console.log('[CreateInvoice] Invoice number fetched:', response.data.data.formatted_number);
+      } else {
+        console.warn('[CreateInvoice] Invalid response format:', response.data);
+        Alert.alert('Warning', 'Could not fetch invoice number. Please enter manually.');
+        setInvoiceNumberDisabled(false);
+      }
+    } catch (error) {
+      console.error('[CreateInvoice] Error fetching invoice number:', error);
+      Alert.alert('Error', 'Failed to fetch invoice number. Please enter manually.');
+      setInvoiceNumberDisabled(false);
+    } finally {
+      setIsLoadingInvoiceNumber(false);
+    }
+  };
+
+  // Load categories on mount
+  useEffect(() => {
+    const loadCategories = async () => {
+      try {
+        const cats = await categoryService.getLocalCategories();
+        console.log('[CreateInvoice] Loaded categories:', cats.slice(0, 5));
+        setCategories(cats as any);
+      } catch (error) {
+        console.error('Error loading categories:', error);
+      }
+    };
+    loadCategories();
+  }, []);
+
+  // Load warehouses and bank accounts on mount
+  useEffect(() => {
+    const loadWarehouses = async () => {
+      try {
+        const whs = await warehouseService.getLocalWarehouses();
+        setWarehouses(whs);
+      } catch (error) {
+        console.error('Error loading warehouses:', error);
+      }
+    };
+
+    const loadBankAccounts = async () => {
+      try {
+        const accounts = await bankAccountService.getBankAccounts();
+        setBankAccounts(accounts);
+      } catch (error) {
+        console.error('Error loading bank accounts:', error);
+      }
+    };
+
+    loadWarehouses();
+    loadBankAccounts();
+  }, []);
+
+  // Filter bank accounts when warehouse changes
+  useEffect(() => {
+    if (selectedWarehouse && bankAccounts.length > 0) {
+      const filtered = bankAccounts.filter(
+        account => account.warehouseId === selectedWarehouse.id
+      );
+      console.log('[CreateInvoice] Filtering bank accounts for warehouse:', selectedWarehouse.id, filtered);
+      setFilteredBankAccounts(filtered);
+      console.log(`[CreateInvoice] Filtered ${filtered.length} bank accounts for warehouse ${selectedWarehouse.id}`);
+    } else {
+      setFilteredBankAccounts([]);
+    }
+  }, [selectedWarehouse, bankAccounts]);
+
+  // Search products with debouncing
+  useEffect(() => {
+    const searchProducts = async () => {
+      if (!productSearchQuery.trim()) {
+        setProductSuggestions([]);
+        setShowProductSuggestions(false);
+        return;
+      }
+
+      setIsSearchingProducts(true);
+      try {
+        const results = await productService.searchProducts(productSearchQuery);
+        setProductSuggestions(results);
+        setShowProductSuggestions(results.length > 0);
+      } catch (error) {
+        console.error('Error searching products:', error);
+        setProductSuggestions([]);
+      } finally {
+        setIsSearchingProducts(false);
+      }
+    };
+
+    // Debounce search
+    const timer = setTimeout(searchProducts, 300);
+    return () => clearTimeout(timer);
+  }, [productSearchQuery]);
+
+  const selectProductFromSuggestions = useCallback((product: Product) => {
+    console.log('[CreateInvoice] Product selected:', product);
+
+    // Clear search query first
+    setProductSearchQuery('');
+    setShowProductSuggestions(false);
+
+    // Auto-fill product details
+    setTempProduct(prev => {
+      const updated = {
+        ...prev,
+        id: product.id.toString(), // Store the product ID
+        product: product.label,
+        rate: product.sale_price || '0',
+        description: product.description || '',
+        quantity: '1', // Default quantity to 1
+      };
+
+      // Calculate price with the new rate
+      const qty = parseFloat(updated.quantity) || 0;
+      const rate = parseFloat(updated.rate) || 0;
+      const discount = parseFloat(updated.discount) || 0;
+      const subtotal = qty * rate;
+      const discountAmount = (subtotal * discount) / 100;
+      updated.price = (subtotal - discountAmount).toFixed(2);
+
+      console.log('[CreateInvoice] Product auto-filled:', updated);
+      return updated;
+    });
+  }, []);
+
   const addProduct = useCallback(() => {
-    const newProduct: ProductItem = {
+    // Reset temp product and show bottom sheet
+    setTempProduct({
       id: Date.now().toString(),
       product: '',
       shop: '',
@@ -177,16 +319,54 @@ export default function CreateInvoice() {
       tax: '0',
       description: '',
       price: '0',
-    };
-    setProducts(prev => {
-      const newProducts = [...prev, newProduct];
-      
-      // Scroll to the new product after a short delay to ensure it's rendered
-      setTimeout(() => {
-        productsListRef.current?.scrollToEnd({ animated: true });
-      }, 100);
-      
-      return newProducts;
+    });
+    setProductSearchQuery('');
+    setShowProductSuggestions(false);
+    addProductBottomSheetRef.current?.snapToIndex(0);
+  }, []);
+
+  const confirmAddProduct = useCallback(() => {
+    // Validate required fields
+    if (!tempProduct.product.trim()) {
+      Alert.alert('Error', 'Please enter product name');
+      return;
+    }
+
+    console.log('[CreateInvoice] Adding product:', tempProduct);
+
+    // Add the product to the list
+    setProducts(prev => [...prev, { ...tempProduct, id: tempProduct.id || Date.now().toString() }]);
+
+    // Close bottom sheet and reset temp product
+    addProductBottomSheetRef.current?.close();
+    setTempProduct({
+      id: '',
+      product: '',
+      shop: '',
+      quantity: '1',
+      rate: '0',
+      discount: '0',
+      tax: '0',
+      description: '',
+      price: '0',
+    });
+  }, [tempProduct]);
+
+  const updateTempProduct = useCallback((field: keyof ProductItem, value: string) => {
+    setTempProduct(prev => {
+      const updated = { ...prev, [field]: value };
+
+      // Recalculate price when quantity or rate changes
+      if (field === 'quantity' || field === 'rate' || field === 'discount') {
+        const qty = parseFloat(updated.quantity) || 0;
+        const rate = parseFloat(updated.rate) || 0;
+        const discount = parseFloat(updated.discount) || 0;
+        const subtotal = qty * rate;
+        const discountAmount = (subtotal * discount) / 100;
+        updated.price = (subtotal - discountAmount).toFixed(2);
+      }
+
+      return updated;
     });
   }, []);
 
@@ -194,7 +374,7 @@ export default function CreateInvoice() {
     setProducts(prevProducts => prevProducts.map(product => {
       if (product.id === id) {
         const updated = { ...product, [field]: value };
-        
+
         // Recalculate price when quantity or rate changes
         if (field === 'quantity' || field === 'rate' || field === 'discount') {
           const qty = parseFloat(updated.quantity) || 0;
@@ -204,7 +384,7 @@ export default function CreateInvoice() {
           const discountAmount = (subtotal * discount) / 100;
           updated.price = (subtotal - discountAmount).toFixed(2);
         }
-        
+
         return updated;
       }
       return product;
@@ -221,27 +401,49 @@ export default function CreateInvoice() {
   }, []);
 
   const addPayment = useCallback(() => {
-    const newPayment: PaymentDetail = {
+    // Reset temp payment and show bottom sheet
+    setTempPayment({
       id: Date.now().toString(),
       amount: '0',
       account: '',
       date: new Date().toLocaleDateString(),
       reference: '',
-    };
-    setPaymentDetails(prev => {
-      const newPayments = [...prev, newPayment];
-      
-      // Scroll to the new payment after a short delay to ensure it's rendered
-      setTimeout(() => {
-        paymentsListRef.current?.scrollToEnd({ animated: true });
-      }, 100);
-      
-      return newPayments;
     });
+    addPaymentBottomSheetRef.current?.snapToIndex(0);
+  }, []);
+
+  const confirmAddPayment = useCallback(() => {
+    // Validate required fields
+    if (!tempPayment.account.trim()) {
+      Alert.alert('Error', 'Please select an account');
+      return;
+    }
+
+    // Add the payment to the list
+    setPaymentDetails(prev => [...prev, { ...tempPayment, id: Date.now().toString() }]);
+
+    // Dismiss keyboard and close bottom sheet
+    Keyboard.dismiss();
+    setTimeout(() => {
+      addPaymentBottomSheetRef.current?.close();
+    }, 100);
+    
+    // Reset temp payment
+    setTempPayment({
+      id: '',
+      amount: '0',
+      account: '',
+      date: new Date().toLocaleDateString(),
+      reference: '',
+    });
+  }, [tempPayment]);
+
+  const updateTempPayment = useCallback((field: keyof PaymentDetail, value: string) => {
+    setTempPayment(prev => ({ ...prev, [field]: value }));
   }, []);
 
   const updatePayment = useCallback((id: string, field: keyof PaymentDetail, value: string) => {
-    setPaymentDetails(prevPayments => prevPayments.map(payment => 
+    setPaymentDetails(prevPayments => prevPayments.map(payment =>
       payment.id === id ? { ...payment, [field]: value } : payment
     ));
   }, []);
@@ -255,7 +457,7 @@ export default function CreateInvoice() {
     });
   }, []);
 
-  const handleCreate = () => {
+  const handleCreate = async () => {
     // Validate required fields
     if (customerType === 'customer' && !selectedCustomer) {
       Alert.alert('Error', 'Please select a customer');
@@ -278,15 +480,120 @@ export default function CreateInvoice() {
       return;
     }
 
-    if (products.some(p => !p.product.trim())) {
-      Alert.alert('Error', 'Please fill in all product details');
+    if (!selectedWarehouse) {
+      Alert.alert('Error', 'Please select a shop/warehouse');
       return;
     }
 
-    // Create invoice logic here
-    Alert.alert('Success', 'Invoice created successfully!', [
-      { text: 'OK', onPress: () => router.back() }
-    ]);
+    if (!selectedCategory) {
+      Alert.alert('Error', 'Please select a category');
+      return;
+    }
+
+    if (products.length === 0 || products.some(p => !p.product.trim())) {
+      Alert.alert('Error', 'Please add at least one product with valid details');
+      return;
+    }
+
+    try {
+      // Format dates to YYYY-MM-DD
+      const formatDateForAPI = (date: Date) => {
+        const year = date.getFullYear();
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const day = String(date.getDate()).padStart(2, '0');
+        return `${year}-${month}-${day}`;
+      };
+
+      // Find customer name based on type
+      let customerName = 'Unknown Customer';
+      if (customerType === 'walk-in') {
+        customerName = walkInCustomerName;
+      } else if (customerType === 'dealers') {
+        const dealer = dealers.find(d => d.id.toString() === selectedCustomer);
+        customerName = dealer?.name || 'Unknown Dealer';
+        console.log('[CreateInvoice] Dealer lookup:', { selectedCustomer, dealer, name: customerName });
+      } else {
+        const customer = customers.find(c => {
+          const customerId = c.serverId || c.id;
+          return customerId === selectedCustomer || customerId?.toString() === selectedCustomer;
+        });
+        customerName = customer?.name || 'Unknown Customer';
+        console.log('[CreateInvoice] Customer lookup:', { 
+          selectedCustomer, 
+          customer, 
+          name: customerName,
+          allCustomers: customers.map(c => ({ id: c.id, serverId: c.serverId, name: c.name }))
+        });
+      }
+
+      // Prepare invoice data
+      const invoiceData = {
+        invoice: {
+          invoiceNo: invoiceNumber || `INV-${Date.now()}`,
+          customerId: selectedCustomer && selectedCustomer !== 'null' ? selectedCustomer : '0',
+          customerName: customerName,
+          customerType: customerType === 'dealers' ? 'Dealer' : 'Customer',
+          categoryId: selectedCategory && selectedCategory !== 'null' ? selectedCategory : '0',
+          warehouseId: selectedWarehouse.id.toString(),
+          warehouseName: selectedWarehouse.name,
+          refNumber: referenceNumber,
+          deliveryStatus: deliveryStatus,
+          issueDate: formatDateForAPI(issueDate),
+          dueDate: formatDateForAPI(dueDate),
+          subTotal: totals.subtotal,
+          discountTotal: totals.discount,
+          taxTotal: '0',
+          grandTotal: totals.total,
+          dueAmount: totals.due,
+          status: (parseFloat(totals.due) === 0 ? 'Paid' : 
+                  parseFloat(totals.paid) > 0 ? 'Partially Paid' : 'Unpaid') as 'Paid' | 'Partially Paid' | 'Unpaid',
+        },
+        items: products.map(product => {
+          // Use the stored product ID from when it was selected
+          const productId = parseInt(product.id) || 0;
+          return {
+            id: productId,
+            quantity: parseFloat(product.quantity) || 1,
+            description: product.description || product.product,
+            price: parseFloat(product.rate) || 0,
+            shop_id: selectedWarehouse.id,
+          };
+        }),
+        payments: paymentDetails.map(payment => {
+          console.log('[CreateInvoice] Processing payment for API:', payment);
+          // Extract bank account ID from "account-{id}" format
+          const accountIdMatch = payment.account.match(/^account-(\d+)$/);
+          const accountId = accountIdMatch ? parseInt(accountIdMatch[1], 10) : null;
+          
+          // Find account by ID to get the chart_account_id
+          const account = filteredBankAccounts.find(acc => acc.id === accountId);
+          console.log('[CreateInvoice] Mapping payment:', payment, 'Account ID:', accountId, 'Found account:', account);
+          return {
+            amount: parseFloat(payment.amount) || 0,
+            account_id: account?.id || 0,
+            payment_method: 1, // Default payment method
+            date: payment.date,
+            reference: payment.reference || '',
+          };
+        }),
+      };
+
+      console.log('[CreateInvoice] Creating invoice:', invoiceData);
+
+      // Create invoice using the service (offline-first approach)
+      const result = await invoiceService.createInvoice(invoiceData);
+
+      if (result) {
+        Alert.alert('Success', 'Invoice created successfully!', [
+          { text: 'OK', onPress: () => router.back() }
+        ]);
+      } else {
+        Alert.alert('Error', 'Failed to create invoice. Please try again.');
+      }
+    } catch (error: any) {
+      console.error('[CreateInvoice] Error creating invoice:', error);
+      Alert.alert('Error', error.message || 'Failed to create invoice. Please try again.');
+    }
   };
 
   const handleCancel = () => {
@@ -300,13 +607,13 @@ export default function CreateInvoice() {
     );
   };
 
-  // Memoized ProductItem component for better performance
-  const ProductItemComponent = React.memo(({ 
-    product, 
-    index, 
-    onUpdate, 
-    onRemove, 
-    canRemove 
+  // Memoized ProductItem component for better performance (Table Row)
+  const ProductItemComponent = React.memo(({
+    product,
+    index,
+    onUpdate,
+    onRemove,
+    canRemove
   }: {
     product: ProductItem;
     index: number;
@@ -315,141 +622,51 @@ export default function CreateInvoice() {
     canRemove: boolean;
   }) => {
     return (
-      <View style={stylesLocal.productCard}>
-        <View style={stylesLocal.productHeader}>
-          <Text style={stylesLocal.productNumber}>#{index + 1}</Text>
-          {canRemove && (
-            <TouchableOpacity 
-              onPress={() => onRemove(product.id)}
-              style={stylesLocal.removeButton}
-            >
-              <MaterialIcons name="close" size={resp.fontSize(16)} color="#ff4d6d" />
-            </TouchableOpacity>
-          )}
-        </View>
-
-        <View style={stylesLocal.productForm}>
-          {/* Product Name */}
-          <View style={stylesLocal.formRow}>
-            <ThemedText style={stylesLocal.formLabel}>Product</ThemedText>
-            <TextInput
-              style={stylesLocal.formInput}
-              value={product.product}
-              onChangeText={(value) => onUpdate(product.id, 'product', value)}
-              placeholder="Enter product name"
-              placeholderTextColor={icon}
-            />
-          </View>
-
-          {/* Shop */}
-          <View style={stylesLocal.formRow}>
-            <ThemedText style={stylesLocal.formLabel}>Shop</ThemedText>
-            <TextInput
-              style={stylesLocal.formInput}
-              value={product.shop}
-              onChangeText={(value) => onUpdate(product.id, 'shop', value)}
-              placeholder="Enter shop name"
-              placeholderTextColor={icon}
-            />
-          </View>
-
-          {/* Quantity and Rate */}
-          <View style={stylesLocal.row}>
-            <View style={stylesLocal.halfWidth}>
-              <ThemedText style={stylesLocal.formLabel}>Quantity</ThemedText>
-              <TextInput
-                style={stylesLocal.formInput}
-                value={product.quantity}
-                onChangeText={(value) => onUpdate(product.id, 'quantity', value)}
-                placeholder="1"
-                placeholderTextColor={icon}
-                keyboardType="numeric"
-              />
-            </View>
-            <View style={stylesLocal.halfWidth}>
-              <ThemedText style={stylesLocal.formLabel}>Rate</ThemedText>
-              <TextInput
-                style={stylesLocal.formInput}
-                value={product.rate}
-                onChangeText={(value) => onUpdate(product.id, 'rate', value)}
-                placeholder="0.00"
-                placeholderTextColor={icon}
-                keyboardType="numeric"
-              />
-            </View>
-          </View>
-
-          {/* Discount and Tax */}
-          <View style={stylesLocal.row}>
-            <View style={stylesLocal.halfWidth}>
-              <ThemedText style={stylesLocal.formLabel}>Discount %</ThemedText>
-              <TextInput
-                style={stylesLocal.formInput}
-                value={product.discount}
-                onChangeText={(value) => onUpdate(product.id, 'discount', value)}
-                placeholder="0"
-                placeholderTextColor={icon}
-                keyboardType="numeric"
-              />
-            </View>
-            <View style={stylesLocal.halfWidth}>
-              <ThemedText style={stylesLocal.formLabel}>Tax %</ThemedText>
-              <TextInput
-                style={stylesLocal.formInput}
-                value={product.tax}
-                onChangeText={(value) => onUpdate(product.id, 'tax', value)}
-                placeholder="0"
-                placeholderTextColor={icon}
-                keyboardType="numeric"
-              />
-            </View>
-          </View>
-
-          {/* Description */}
-          <View style={stylesLocal.formRow}>
-            <ThemedText style={stylesLocal.formLabel}>Description</ThemedText>
-            <TextInput
-              style={[stylesLocal.formInput, { 
-                height: resp.vertical(72),
-                paddingTop: resp.vertical(16),
-                textAlignVertical: 'top'
-              }]}
-              value={product.description}
-              onChangeText={(value) => onUpdate(product.id, 'description', value)}
-              placeholder="Enter description"
-              placeholderTextColor={icon}
-              multiline
-            />
-          </View>
-
-          {/* Price Display */}
-          <View style={stylesLocal.priceRow}>
-            <ThemedText style={stylesLocal.priceLabel}>Amount:</ThemedText>
-            <ThemedText style={stylesLocal.priceValue}>{product.price} Rs.</ThemedText>
-          </View>
-        </View>
+      <View style={stylesLocal.tableRow}>
+        <Text style={[stylesLocal.tableCell, stylesLocal.tableCellIndex]}>{index + 1}</Text>
+        {/* <TextInput
+          style={[stylesLocal.tableCell, stylesLocal.tableCellProduct]}
+          value={product.product}
+          onChangeText={(value) => onUpdate(product.id, 'product', value)}
+          placeholder="Product"
+          placeholderTextColor={icon}
+        /> */}
+        <TextInput
+          style={[stylesLocal.tableCell, stylesLocal.tableCellSmall]}
+          value={product.quantity}
+          onChangeText={(value) => onUpdate(product.id, 'quantity', value)}
+          placeholder="Qty"
+          placeholderTextColor={icon}
+          keyboardType="numeric"
+        />
+        <TextInput
+          style={[stylesLocal.tableCell, stylesLocal.tableCellMedium]}
+          value={product.rate}
+          onChangeText={(value) => onUpdate(product.id, 'rate', value)}
+          placeholder="Price"
+          placeholderTextColor={icon}
+          keyboardType="numeric"
+        />
+        <TextInput
+          style={[stylesLocal.tableCell, stylesLocal.tableCellSmall]}
+          value={product.discount}
+          onChangeText={(value) => onUpdate(product.id, 'discount', value)}
+          placeholder="Disc%"
+          placeholderTextColor={icon}
+          keyboardType="numeric"
+        />
+        <Text style={[stylesLocal.tableCell, stylesLocal.tableCellPrice]}>{product.price}</Text>
+        {canRemove && (
+          <TouchableOpacity
+            onPress={() => onRemove(product.id)}
+            style={stylesLocal.tableDeleteBtn}
+          >
+            <MaterialIcons name="delete-outline" size={resp.fontSize(18)} color="#ef4444" />
+          </TouchableOpacity>
+        )}
       </View>
     );
   });
-
-  // Render item function for FlatList
-  const renderProductItem = useCallback(({ item, index }: { item: ProductItem; index: number }) => {
-    return (
-      <ProductItemComponent
-        product={item}
-        index={index}
-        onUpdate={updateProduct}
-        onRemove={removeProduct}
-        canRemove={products.length > 1}
-      />
-    );
-  }, [updateProduct, removeProduct, products.length]);
-
-  // Key extractor for FlatList
-  const keyExtractor = useCallback((item: ProductItem) => item.id, []);
-
-  // List header component - empty since we moved header outside
-  const ListHeaderComponent = useMemo(() => null, []);
 
   // List footer component (totals)
   const ListFooterComponent = useMemo(() => (
@@ -469,14 +686,14 @@ export default function CreateInvoice() {
     </View>
   ), [totals, masterDiscount]);
 
-  // Memoized PaymentItem component for better performance
-  const PaymentItemComponent = React.memo(({ 
-    payment, 
-    index, 
-    onUpdate, 
-    onRemove, 
+  // Memoized PaymentItem component for better performance (Table Row)
+  const PaymentItemComponent = React.memo(({
+    payment,
+    index,
+    onUpdate,
+    onRemove,
     canRemove,
-    onAccountSelect 
+    onAccountSelect
   }: {
     payment: PaymentDetail;
     index: number;
@@ -486,93 +703,49 @@ export default function CreateInvoice() {
     onAccountSelect: (index: number) => void;
   }) => {
     return (
-      <View style={stylesLocal.paymentCard}>
-        <View style={stylesLocal.productHeader}>
-          <Text style={stylesLocal.productNumber}>Payment #{index + 1}</Text>
-          {canRemove && (
-            <TouchableOpacity 
-              onPress={() => onRemove(payment.id)}
-              style={stylesLocal.removeButton}
-            >
-              <MaterialIcons name="close" size={resp.fontSize(16)} color="#ff4d6d" />
-            </TouchableOpacity>
-          )}
-        </View>
-
-        <View style={stylesLocal.row}>
-          <View style={stylesLocal.halfWidth}>
-            <ThemedText style={stylesLocal.formLabel}>Amount</ThemedText>
-            <TextInput
-              style={stylesLocal.formInput}
-              value={payment.amount}
-              onChangeText={(value) => onUpdate(payment.id, 'amount', value)}
-              placeholder="0"
-              placeholderTextColor={icon}
-              keyboardType="numeric"
-            />
-          </View>
-          <View style={stylesLocal.halfWidth}>
-            <ThemedText style={stylesLocal.formLabel}>Account</ThemedText>
-            <TouchableOpacity 
-              style={stylesLocal.input}
-              onPress={() => onAccountSelect(index)}
-            >
-              <Text style={[stylesLocal.inputText, { color: payment.account ? text : icon }]}>
-                {payment.account || 'Select Account'}
-              </Text>
-              <MaterialIcons name="keyboard-arrow-down" size={resp.fontSize(20)} color={icon} />
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={stylesLocal.row}>
-          <View style={stylesLocal.halfWidth}>
-            <ThemedText style={stylesLocal.formLabel}>Date</ThemedText>
-            <TextInput
-              style={stylesLocal.formInput}
-              value={payment.date}
-              onChangeText={(value) => onUpdate(payment.id, 'date', value)}
-              placeholder="11/05/2025"
-              placeholderTextColor={icon}
-            />
-          </View>
-          <View style={stylesLocal.halfWidth}>
-            <ThemedText style={stylesLocal.formLabel}>Reference</ThemedText>
-            <TextInput
-              style={stylesLocal.formInput}
-              value={payment.reference}
-              onChangeText={(value) => onUpdate(payment.id, 'reference', value)}
-              placeholder="Enter Reference"
-              placeholderTextColor={icon}
-            />
-          </View>
-        </View>
+      <View style={stylesLocal.paymentTableRow}>
+        <Text style={[stylesLocal.tableCell, stylesLocal.tableCellIndex]}>{index + 1}</Text>
+        <TextInput
+          style={[stylesLocal.tableCell, stylesLocal.tableCellMedium]}
+          value={payment.amount}
+          onChangeText={(value) => onUpdate(payment.id, 'amount', value)}
+          placeholder="Amount"
+          placeholderTextColor={icon}
+          keyboardType="numeric"
+        />
+        <TouchableOpacity
+          style={[stylesLocal.tableCell, stylesLocal.tableCellAccount]}
+          onPress={() => onAccountSelect(index)}
+        >
+          <Text style={[stylesLocal.tableCellText, { color: payment.account ? text : icon }]} numberOfLines={1}>
+            {payment.account || 'Select Account'}
+          </Text>
+        </TouchableOpacity>
+        <TextInput
+          style={[stylesLocal.tableCell, stylesLocal.tableCellMedium]}
+          value={payment.date}
+          onChangeText={(value) => onUpdate(payment.id, 'date', value)}
+          placeholder="Date"
+          placeholderTextColor={icon}
+        />
+        <TextInput
+          style={[stylesLocal.tableCell, stylesLocal.tableCellMedium]}
+          value={payment.reference}
+          onChangeText={(value) => onUpdate(payment.id, 'reference', value)}
+          placeholder="Reference"
+          placeholderTextColor={icon}
+        />
+        {canRemove && (
+          <TouchableOpacity
+            onPress={() => onRemove(payment.id)}
+            style={stylesLocal.tableDeleteBtn}
+          >
+            <MaterialIcons name="delete-outline" size={resp.fontSize(18)} color="#ef4444" />
+          </TouchableOpacity>
+        )}
       </View>
     );
   });
-
-  // Render payment item function for FlatList
-  const renderPaymentItem = useCallback(({ item, index }: { item: PaymentDetail; index: number }) => {
-    return (
-      <PaymentItemComponent
-        payment={item}
-        index={index}
-        onUpdate={updatePayment}
-        onRemove={removePayment}
-        canRemove={paymentDetails.length > 1}
-        onAccountSelect={(paymentIndex) => {
-          setSelectedPaymentIndex(paymentIndex);
-          setShowAccountModal(true);
-        }}
-      />
-    );
-  }, [updatePayment, removePayment, paymentDetails.length]);
-
-  // Payment key extractor
-  const paymentKeyExtractor = useCallback((item: PaymentDetail) => item.id, []);
-
-  // Payment list header - empty since we moved header outside
-  const PaymentListHeaderComponent = useMemo(() => null, []);
 
   // Payment list footer (payment summary)
   const PaymentListFooterComponent = useMemo(() => (
@@ -593,18 +766,18 @@ export default function CreateInvoice() {
   ), [totals]);
 
   // Dropdown Modal Component
-  function DropdownModal({ 
-    visible, 
-    title, 
-    options, 
-    onClose, 
-    onSelect 
-  }: { 
-    visible: boolean; 
-    title: string; 
-    options: string[]; 
-    onClose: () => void; 
-    onSelect: (value: string) => void; 
+  function DropdownModal({
+    visible,
+    title,
+    options,
+    onClose,
+    onSelect
+  }: {
+    visible: boolean;
+    title: string;
+    options: Array<{ id: string; label: string }>;
+    onClose: () => void;
+    onSelect: (value: string) => void;
   }) {
     return (
       <Modal visible={visible} transparent animationType="fade">
@@ -613,15 +786,15 @@ export default function CreateInvoice() {
           <Text style={stylesLocal.modalTitle}>{title}</Text>
           <ScrollView style={{ maxHeight: resp.vertical(300) }}>
             {options.map((option) => (
-              <TouchableOpacity 
-                key={option} 
-                style={stylesLocal.modalItem} 
+              <TouchableOpacity
+                key={option.id}
+                style={stylesLocal.modalItem}
                 onPress={() => {
-                  onSelect(option);
+                  onSelect(option.id);
                   onClose();
                 }}
               >
-                <Text style={stylesLocal.modalItemText}>{option}</Text>
+                <Text style={stylesLocal.modalItemText}>{option.label}</Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
@@ -631,14 +804,14 @@ export default function CreateInvoice() {
   }
 
   // Date Modal Component
-  function DateModal({ 
-    visible, 
-    onClose, 
-    onSelect 
-  }: { 
-    visible: boolean; 
-    onClose: () => void; 
-    onSelect: (date: Date) => void; 
+  function DateModal({
+    visible,
+    onClose,
+    onSelect
+  }: {
+    visible: boolean;
+    onClose: () => void;
+    onSelect: (date: Date) => void;
   }) {
     const today = new Date();
     const [monthOffset, setMonthOffset] = useState(0);
@@ -650,7 +823,7 @@ export default function CreateInvoice() {
     const firstWeekday = new Date(year, month, 1).getDay();
     const weeks: Array<Array<number | null>> = [];
     let current = 1 - firstWeekday;
-    
+
     while (current <= daysInMonth) {
       const week: Array<number | null> = [];
       for (let i = 0; i < 7; i++) {
@@ -706,540 +879,843 @@ export default function CreateInvoice() {
     );
   }
 
+  // Render backdrop for bottom sheets
+  const renderProductBackdrop = useCallback(
+    (props: any) => (
+      <BottomSheetBackdrop
+        {...props}
+        disappearsOnIndex={-1}
+        appearsOnIndex={0}
+        opacity={0.6}
+      />
+    ),
+    []
+  );
+
+  const renderPaymentBackdrop = useCallback(
+    (props: any) => (
+      <BottomSheetBackdrop
+        {...props}
+        disappearsOnIndex={-1}
+        appearsOnIndex={0}
+        opacity={0.6}
+      />
+    ),
+    []
+  );
+
   return (
-    <SafeAreaView style={{ flex: 1 }} edges={["bottom"]}>
-      <ThemedView style={[stylesLocal.container, { backgroundColor: bg }]}>
-        {/* Header */}
-        <View style={stylesLocal.header}>
-          <TouchableOpacity onPress={() => router.back()} style={stylesLocal.backBtn}>
-            <MaterialIcons name="arrow-back" size={resp.fontSize(24)} color={icon} />
-          </TouchableOpacity>
-          <ThemedText type="defaultSemiBold" style={stylesLocal.headerTitle}>
-            Create Invoice
-          </ThemedText>
-          <View style={stylesLocal.headerSpacer} />
-        </View>
-
-        <ScrollView 
-          ref={mainScrollViewRef}
-          contentContainerStyle={{ 
-            paddingBottom: resp.vertical(120),
-            paddingTop: resp.vertical(8)
-          }}
-          showsVerticalScrollIndicator={false}
-        >
-          {/* Customer Type Selection */}
-          <View style={stylesLocal.section}>
-            <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
-              Customer Type
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaView style={{ flex: 1 }} edges={["bottom"]}>
+        <ThemedView style={[stylesLocal.container, { backgroundColor: bg }]}>
+          {/* Header */}
+          <View style={stylesLocal.header}>
+            <TouchableOpacity onPress={() => router.back()} style={stylesLocal.backBtn}>
+              <MaterialIcons name="arrow-back" size={resp.fontSize(24)} color={icon} />
+            </TouchableOpacity>
+            <ThemedText type="defaultSemiBold" style={stylesLocal.headerTitle}>
+              Create Invoice
             </ThemedText>
-            <View style={stylesLocal.radioGroup}>
-              <TouchableOpacity 
-                style={stylesLocal.radioOption}
-                onPress={() => setCustomerType('customer')}
-              >
-                <View style={[
-                  stylesLocal.radio, 
-                  customerType === 'customer' && stylesLocal.radioSelected
-                ]}>
-                  {customerType === 'customer' && (
-                    <View style={{
-                      width: resp.horizontalScale(8),
-                      height: resp.horizontalScale(8),
-                      borderRadius: resp.horizontalScale(4),
-                      backgroundColor: '#ffffff',
-                      position: 'absolute',
-                      top: '50%',
-                      left: '50%',
-                      transform: [
-                        { translateX: -resp.horizontalScale(4) },
-                        { translateY: -resp.horizontalScale(4) }
-                      ]
-                    }} />
-                  )}
-                </View>
-                <Text style={stylesLocal.radioText}>Customer</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={stylesLocal.radioOption}
-                onPress={() => setCustomerType('walk-in')}
-              >
-                <View style={[
-                  stylesLocal.radio, 
-                  customerType === 'walk-in' && stylesLocal.radioSelected
-                ]}>
-                  {customerType === 'walk-in' && (
-                    <View style={{
-                      width: resp.horizontalScale(8),
-                      height: resp.horizontalScale(8),
-                      borderRadius: resp.horizontalScale(4),
-                      backgroundColor: '#ffffff',
-                      position: 'absolute',
-                      top: '50%',
-                      left: '50%',
-                      transform: [
-                        { translateX: -resp.horizontalScale(4) },
-                        { translateY: -resp.horizontalScale(4) }
-                      ]
-                    }} />
-                  )}
-                </View>
-                <Text style={stylesLocal.radioText}>Walk In Customer</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={stylesLocal.radioOption}
-                onPress={() => setCustomerType('dealers')}
-              >
-                <View style={[
-                  stylesLocal.radio, 
-                  customerType === 'dealers' && stylesLocal.radioSelected
-                ]}>
-                  {customerType === 'dealers' && (
-                    <View style={{
-                      width: resp.horizontalScale(8),
-                      height: resp.horizontalScale(8),
-                      borderRadius: resp.horizontalScale(4),
-                      backgroundColor: '#ffffff',
-                      position: 'absolute',
-                      top: '50%',
-                      left: '50%',
-                      transform: [
-                        { translateX: -resp.horizontalScale(4) },
-                        { translateY: -resp.horizontalScale(4) }
-                      ]
-                    }} />
-                  )}
-                </View>
-                <Text style={stylesLocal.radioText}>Dealers</Text>
-              </TouchableOpacity>
-            </View>
+            <View style={stylesLocal.headerSpacer} />
           </View>
 
-          {/* Customer Selection */}
-          {customerType === 'customer' && (
+          <ScrollView
+            ref={mainScrollViewRef}
+            contentContainerStyle={{
+              paddingBottom: resp.vertical(120),
+              paddingTop: resp.vertical(8)
+            }}
+            showsVerticalScrollIndicator={false}
+          >
+            {/* Customer Type Selection */}
             <View style={stylesLocal.section}>
               <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
-                Customer
+                Customer Type
               </ThemedText>
-              <TouchableOpacity 
-                style={stylesLocal.input}
-                onPress={() => setShowCustomerModal(true)}
-              >
-                <Text style={[stylesLocal.inputText, { color: selectedCustomer ? text : icon }]}>
-                  {selectedCustomer || 'Select Customer'}
-                </Text>
-                <MaterialIcons name="keyboard-arrow-down" size={resp.fontSize(20)} color={icon} />
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {/* Walk In Customer Details */}
-          {customerType === 'walk-in' && (
-            <View style={stylesLocal.section}>
-              <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
-                Walk In Customer Details
-              </ThemedText>
-              
-              <View style={stylesLocal.formRow}>
-                <ThemedText style={stylesLocal.formLabel}>Customer Name</ThemedText>
-                <TextInput
-                  style={stylesLocal.textInput}
-                  value={walkInCustomerName}
-                  onChangeText={setWalkInCustomerName}
-                  placeholder="Enter customer name"
-                  placeholderTextColor={icon}
-                />
-              </View>
-
-              <View style={stylesLocal.formRow}>
-                <ThemedText style={stylesLocal.formLabel}>Contact Number</ThemedText>
-                <TextInput
-                  style={stylesLocal.textInput}
-                  value={walkInContactNumber}
-                  onChangeText={setWalkInContactNumber}
-                  placeholder="Enter contact number"
-                  placeholderTextColor={icon}
-                  keyboardType="phone-pad"
-                />
-              </View>
-
-              <View style={stylesLocal.formRow}>
-                <ThemedText style={stylesLocal.formLabel}>Address</ThemedText>
-                <TextInput
-                  style={[stylesLocal.textInput, { 
-                    height: resp.vertical(72),
-                    paddingTop: resp.vertical(16),
-                    textAlignVertical: 'top'
-                  }]}
-                  value={walkInAddress}
-                  onChangeText={setWalkInAddress}
-                  placeholder="Enter address"
-                  placeholderTextColor={icon}
-                  multiline
-                />
-              </View>
-            </View>
-          )}
-
-          {/* Dealers Selection */}
-          {customerType === 'dealers' && (
-            <View style={stylesLocal.section}>
-              <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
-                Dealers
-              </ThemedText>
-              <TouchableOpacity 
-                style={stylesLocal.input}
-                onPress={() => setShowCustomerModal(true)}
-              >
-                <Text style={[stylesLocal.inputText, { color: selectedCustomer ? text : icon }]}>
-                  {selectedCustomer || 'Select Dealer'}
-                </Text>
-                <MaterialIcons name="keyboard-arrow-down" size={resp.fontSize(20)} color={icon} />
-              </TouchableOpacity>
-            </View>
-          )}
-
-          {/* Dates */}
-          <View style={stylesLocal.section}>
-            <View style={stylesLocal.row}>
-              <View style={stylesLocal.halfWidth}>
-                <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
-                  Issue Date
-                </ThemedText>
-                <TouchableOpacity 
-                  style={stylesLocal.input}
-                  onPress={() => {
-                    setDateModalType('issue');
-                    setShowDateModal(true);
-                  }}
+              <View style={stylesLocal.radioGroup}>
+                <TouchableOpacity
+                  style={stylesLocal.radioOption}
+                  onPress={() => setCustomerType('customer')}
                 >
-                  <MaterialIcons name="calendar-today" size={resp.fontSize(16)} color={icon} />
-                  <Text style={stylesLocal.inputText}>{formatDate(issueDate)}</Text>
+                  <View style={[
+                    stylesLocal.radio,
+                    customerType === 'customer' && stylesLocal.radioSelected
+                  ]}>
+                    {customerType === 'customer' && (
+                      <View style={{
+                        width: resp.horizontalScale(8),
+                        height: resp.horizontalScale(8),
+                        borderRadius: resp.horizontalScale(4),
+                        backgroundColor: '#ffffff',
+                        position: 'absolute',
+                        top: '50%',
+                        left: '50%',
+                        transform: [
+                          { translateX: -resp.horizontalScale(4) },
+                          { translateY: -resp.horizontalScale(4) }
+                        ]
+                      }} />
+                    )}
+                  </View>
+                  <Text style={stylesLocal.radioText}>Customer</Text>
                 </TouchableOpacity>
-              </View>
-              <View style={stylesLocal.halfWidth}>
-                <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
-                  Due Date
-                </ThemedText>
-                <TouchableOpacity 
-                  style={stylesLocal.input}
-                  onPress={() => {
-                    setDateModalType('due');
-                    setShowDateModal(true);
-                  }}
+                <TouchableOpacity
+                  style={stylesLocal.radioOption}
+                  onPress={() => setCustomerType('walk-in')}
                 >
-                  <MaterialIcons name="calendar-today" size={resp.fontSize(16)} color={icon} />
-                  <Text style={stylesLocal.inputText}>{formatDate(dueDate)}</Text>
+                  <View style={[
+                    stylesLocal.radio,
+                    customerType === 'walk-in' && stylesLocal.radioSelected
+                  ]}>
+                    {customerType === 'walk-in' && (
+                      <View style={{
+                        width: resp.horizontalScale(8),
+                        height: resp.horizontalScale(8),
+                        borderRadius: resp.horizontalScale(4),
+                        backgroundColor: '#ffffff',
+                        position: 'absolute',
+                        top: '50%',
+                        left: '50%',
+                        transform: [
+                          { translateX: -resp.horizontalScale(4) },
+                          { translateY: -resp.horizontalScale(4) }
+                        ]
+                      }} />
+                    )}
+                  </View>
+                  <Text style={stylesLocal.radioText}>Walk In Customer</Text>
+                </TouchableOpacity>
+                <TouchableOpacity
+                  style={stylesLocal.radioOption}
+                  onPress={() => setCustomerType('dealers')}
+                >
+                  <View style={[
+                    stylesLocal.radio,
+                    customerType === 'dealers' && stylesLocal.radioSelected
+                  ]}>
+                    {customerType === 'dealers' && (
+                      <View style={{
+                        width: resp.horizontalScale(8),
+                        height: resp.horizontalScale(8),
+                        borderRadius: resp.horizontalScale(4),
+                        backgroundColor: '#ffffff',
+                        position: 'absolute',
+                        top: '50%',
+                        left: '50%',
+                        transform: [
+                          { translateX: -resp.horizontalScale(4) },
+                          { translateY: -resp.horizontalScale(4) }
+                        ]
+                      }} />
+                    )}
+                  </View>
+                  <Text style={stylesLocal.radioText}>Dealers</Text>
                 </TouchableOpacity>
               </View>
             </View>
-          </View>
 
-          {/* Delivery Status and Category */}
-          <View style={stylesLocal.section}>
-            <View style={stylesLocal.row}>
-              <View style={stylesLocal.halfWidth}>
+            {/* Customer Selection */}
+            {customerType === 'customer' && (
+              <View style={stylesLocal.section}>
                 <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
-                  Delivery Status
+                  Customer
                 </ThemedText>
-                <TouchableOpacity 
+                <TouchableOpacity
                   style={stylesLocal.input}
-                  onPress={() => setShowDeliveryModal(true)}
+                  onPress={() => setShowCustomerModal(true)}
                 >
-                  <Text style={stylesLocal.inputText}>{deliveryStatus}</Text>
-                  <MaterialIcons name="keyboard-arrow-down" size={resp.fontSize(20)} color={icon} />
-                </TouchableOpacity>
-              </View>
-              <View style={stylesLocal.halfWidth}>
-                <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
-                  Category
-                </ThemedText>
-                <TouchableOpacity 
-                  style={stylesLocal.input}
-                  onPress={() => setShowCategoryModal(true)}
-                >
-                  <Text style={[stylesLocal.inputText, { color: selectedCategory ? text : icon }]}>
-                    {selectedCategory || 'Select Category'}
+                  <Text style={[stylesLocal.inputText, { color: selectedCustomer ? text : icon }]}>
+                    {selectedCustomer ? customers.find(c => (c.serverId || c.id) === selectedCustomer)?.name || 'Select Customer' : 'Select Customer'}
                   </Text>
                   <MaterialIcons name="keyboard-arrow-down" size={resp.fontSize(20)} color={icon} />
                 </TouchableOpacity>
               </View>
-            </View>
-          </View>
+            )}
 
-          {/* Invoice Number and Reference */}
-          <View style={stylesLocal.section}>
-            <View style={stylesLocal.row}>
-              <View style={stylesLocal.halfWidth}>
+            {/* Walk In Customer Details */}
+            {customerType === 'walk-in' && (
+              <View style={stylesLocal.section}>
                 <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
-                  Invoice Number
+                  Walk In Customer Details
                 </ThemedText>
-                <TextInput
-                  style={stylesLocal.textInput}
-                  value={invoiceNumber}
-                  onChangeText={setInvoiceNumber}
-                  placeholder="#INVO00013"
-                  placeholderTextColor={icon}
-                />
-              </View>
-              <View style={stylesLocal.halfWidth}>
-                <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
-                  Ref Number
-                </ThemedText>
-                <TextInput
-                  style={stylesLocal.textInput}
-                  value={referenceNumber}
-                  onChangeText={setReferenceNumber}
-                  placeholder="Enter Ref Number"
-                  placeholderTextColor={icon}
-                />
-              </View>
-            </View>
-          </View>
 
-          {/* Master Discount and Stock Type */}
-          <View style={stylesLocal.section}>
-            <View style={stylesLocal.row}>
-              <View style={stylesLocal.halfWidth}>
-                <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
-                  Master Discount
-                </ThemedText>
-                <TextInput
-                  style={stylesLocal.textInput}
-                  value={masterDiscount}
-                  onChangeText={setMasterDiscount}
-                  placeholder="Enter Master Discount"
-                  placeholderTextColor={icon}
-                  keyboardType="numeric"
-                />
+                <View style={stylesLocal.formRow}>
+                  <ThemedText style={stylesLocal.formLabel}>Customer Name</ThemedText>
+                  <TextInput
+                    style={stylesLocal.textInput}
+                    value={walkInCustomerName}
+                    onChangeText={setWalkInCustomerName}
+                    placeholder="Enter customer name"
+                    placeholderTextColor={icon}
+                  />
+                </View>
+
+                <View style={stylesLocal.formRow}>
+                  <ThemedText style={stylesLocal.formLabel}>Contact Number</ThemedText>
+                  <TextInput
+                    style={stylesLocal.textInput}
+                    value={walkInContactNumber}
+                    onChangeText={setWalkInContactNumber}
+                    placeholder="Enter contact number"
+                    placeholderTextColor={icon}
+                    keyboardType="phone-pad"
+                  />
+                </View>
+
+                <View style={stylesLocal.formRow}>
+                  <ThemedText style={stylesLocal.formLabel}>Address</ThemedText>
+                  <TextInput
+                    style={[stylesLocal.textInput, {
+                      height: resp.vertical(72),
+                      paddingTop: resp.vertical(16),
+                      textAlignVertical: 'top'
+                    }]}
+                    value={walkInAddress}
+                    onChangeText={setWalkInAddress}
+                    placeholder="Enter address"
+                    placeholderTextColor={icon}
+                    multiline
+                  />
+                </View>
               </View>
-              <View style={stylesLocal.halfWidth}>
+            )}
+
+            {/* Dealers Selection */}
+            {customerType === 'dealers' && (
+              <View style={stylesLocal.section}>
                 <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
-                  Stock Type
+                  Dealers
                 </ThemedText>
-                <View style={stylesLocal.radioGroup}>
-                  <TouchableOpacity 
-                    style={stylesLocal.radioOption}
-                    onPress={() => setStockType('send-now')}
+                <TouchableOpacity
+                  style={stylesLocal.input}
+                  onPress={() => setShowCustomerModal(true)}
+                >
+                  <Text style={[stylesLocal.inputText, { color: selectedCustomer ? text : icon }]}>
+                    {selectedCustomer ? dealers.find(d => d.id.toString() === selectedCustomer)?.name || 'Select Dealer' : 'Select Dealer'}
+                  </Text>
+                  <MaterialIcons name="keyboard-arrow-down" size={resp.fontSize(20)} color={icon} />
+                </TouchableOpacity>
+              </View>
+            )}
+
+            {/* Warehouse/Shop Selection */}
+            <View style={stylesLocal.section}>
+              <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
+                Shop / Warehouse
+              </ThemedText>
+              <TouchableOpacity
+                style={stylesLocal.input}
+                onPress={() => setShowWarehouseModal(true)}
+              >
+                <Text style={[stylesLocal.inputText, { color: selectedWarehouse ? text : icon }]}>
+                  {selectedWarehouse?.name || 'Select Shop'}
+                </Text>
+                <MaterialIcons name="keyboard-arrow-down" size={resp.fontSize(20)} color={icon} />
+              </TouchableOpacity>
+            </View>
+
+            {/* Dates */}
+            <View style={stylesLocal.section}>
+              <View style={stylesLocal.row}>
+                <View style={stylesLocal.halfWidth}>
+                  <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
+                    Issue Date
+                  </ThemedText>
+                  <TouchableOpacity
+                    style={stylesLocal.input}
+                    onPress={() => {
+                      setDateModalType('issue');
+                      setShowDateModal(true);
+                    }}
                   >
-                    <View style={[
-                      stylesLocal.radio, 
-                      stockType === 'send-now' && stylesLocal.radioSelected
-                    ]}>
-                      {stockType === 'send-now' && (
-                        <View style={{
-                          width: resp.horizontalScale(8),
-                          height: resp.horizontalScale(8),
-                          borderRadius: resp.horizontalScale(4),
-                          backgroundColor: '#ffffff',
-                          position: 'absolute',
-                          top: '50%',
-                          left: '50%',
-                          transform: [
-                            { translateX: -resp.horizontalScale(4) },
-                            { translateY: -resp.horizontalScale(4) }
-                          ]
-                        }} />
-                      )}
-                    </View>
-                    <Text style={stylesLocal.radioText}>Send Now Stock</Text>
+                    <MaterialIcons name="calendar-today" size={resp.fontSize(16)} color={icon} />
+                    <Text style={stylesLocal.inputText}>{formatDate(issueDate)}</Text>
                   </TouchableOpacity>
-                  <TouchableOpacity 
-                    style={stylesLocal.radioOption}
-                    onPress={() => setStockType('multi-ship')}
+                </View>
+                <View style={stylesLocal.halfWidth}>
+                  <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
+                    Due Date
+                  </ThemedText>
+                  <TouchableOpacity
+                    style={stylesLocal.input}
+                    onPress={() => {
+                      setDateModalType('due');
+                      setShowDateModal(true);
+                    }}
                   >
-                    <View style={[
-                      stylesLocal.radio, 
-                      stockType === 'multi-ship' && stylesLocal.radioSelected
-                    ]}>
-                      {stockType === 'multi-ship' && (
-                        <View style={{
-                          width: resp.horizontalScale(8),
-                          height: resp.horizontalScale(8),
-                          borderRadius: resp.horizontalScale(4),
-                          backgroundColor: '#ffffff',
-                          position: 'absolute',
-                          top: '50%',
-                          left: '50%',
-                          transform: [
-                            { translateX: -resp.horizontalScale(4) },
-                            { translateY: -resp.horizontalScale(4) }
-                          ]
-                        }} />
-                      )}
-                    </View>
-                    <Text style={stylesLocal.radioText}>Multi Ship Stock</Text>
+                    <MaterialIcons name="calendar-today" size={resp.fontSize(16)} color={icon} />
+                    <Text style={stylesLocal.inputText}>{formatDate(dueDate)}</Text>
                   </TouchableOpacity>
                 </View>
               </View>
             </View>
+
+            {/* Delivery Status and Category */}
+            <View style={stylesLocal.section}>
+              <View style={stylesLocal.row}>
+                <View style={stylesLocal.halfWidth}>
+                  <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
+                    Delivery Status
+                  </ThemedText>
+                  <TouchableOpacity
+                    style={stylesLocal.input}
+                    onPress={() => setShowDeliveryModal(true)}
+                  >
+                    <Text style={stylesLocal.inputText}>{deliveryStatus}</Text>
+                    <MaterialIcons name="keyboard-arrow-down" size={resp.fontSize(20)} color={icon} />
+                  </TouchableOpacity>
+                </View>
+                <View style={stylesLocal.halfWidth}>
+                  <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
+                    Category
+                  </ThemedText>
+                  <TouchableOpacity
+                    style={stylesLocal.input}
+                    onPress={() => setShowCategoryModal(true)}
+                  >
+                    <Text style={[stylesLocal.inputText, { color: selectedCategory ? text : icon }]}>
+                      {selectedCategory ? categories.find(c => c.id.toString() === selectedCategory)?.name || 'Select Category' : 'Select Category'}
+                    </Text>
+                    <MaterialIcons name="keyboard-arrow-down" size={resp.fontSize(20)} color={icon} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+            </View>
+
+            {/* Invoice Number and Reference */}
+            <View style={stylesLocal.section}>
+              <View style={stylesLocal.row}>
+                <View style={stylesLocal.halfWidth}>
+                  <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
+                    Invoice Number {isLoadingInvoiceNumber && '(Loading...)'}
+                  </ThemedText>
+                  <TextInput
+                    style={[
+                      stylesLocal.textInput,
+                      (invoiceNumberDisabled || isLoadingInvoiceNumber) && { backgroundColor: '#f0f0f0', opacity: 0.6 }
+                    ]}
+                    value={invoiceNumber}
+                    onChangeText={setInvoiceNumber}
+                    placeholder="Select warehouse first"
+                    placeholderTextColor={icon}
+                    editable={!invoiceNumberDisabled && !isLoadingInvoiceNumber}
+                  />
+                </View>
+                <View style={stylesLocal.halfWidth}>
+                  <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
+                    Ref Number
+                  </ThemedText>
+                  <TextInput
+                    style={stylesLocal.textInput}
+                    value={referenceNumber}
+                    onChangeText={setReferenceNumber}
+                    placeholder="Enter Ref Number"
+                    placeholderTextColor={icon}
+                  />
+                </View>
+              </View>
+            </View>
+
+            {/* Products & Services - Table Format */}
+            <View style={stylesLocal.section}>
+              {/* Fixed Header */}
+              <View style={stylesLocal.sectionHeader}>
+                <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
+                  Products & Services
+                </ThemedText>
+                <TouchableOpacity
+                  style={stylesLocal.addButton}
+                  onPress={addProduct}
+                >
+                  <MaterialIcons name="add" size={resp.fontSize(16)} color="#fff" />
+                  <Text style={stylesLocal.addButtonText}>Add Item</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Scrollable Products Table */}
+              <View style={stylesLocal.productsContainer}>
+                {products.length === 0 ? (
+                  <View style={stylesLocal.emptyState}>
+                    <MaterialIcons name="inventory-2" size={resp.fontSize(48)} color={icon} />
+                    <ThemedText style={stylesLocal.emptyStateText}>
+                      No products added yet
+                    </ThemedText>
+                    <ThemedText style={stylesLocal.emptyStateSubtext}>
+                      Click "Add Item" to add products or services
+                    </ThemedText>
+                  </View>
+                ) : (
+                  <View>
+                    {/* Table Header */}
+                    <View style={stylesLocal.tableHeader}>
+                      <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellIndex]}>#</Text>
+                      <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellSmall]}>Qty</Text>
+                      <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellMedium]}>Rate</Text>
+                      <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellPrice]}>Amount</Text>
+                      <View style={{ width: resp.horizontalScale(32) }} />
+                    </View>
+
+                    {/* Table Rows */}
+                    {products.map((item, index) => (
+                      <ProductItemComponent
+                        key={item.id}
+                        product={item}
+                        index={index}
+                        onUpdate={updateProduct}
+                        onRemove={removeProduct}
+                        canRemove={products.length > 1}
+                      />
+                    ))}
+                    {ListFooterComponent}
+                  </View>
+                )}
+              </View>
+            </View>
+
+            {/* Add Payment - Table Format */}
+            <View style={stylesLocal.section}>
+              {/* Fixed Header */}
+              <View style={stylesLocal.sectionHeader}>
+                <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
+                  Add Payment
+                </ThemedText>
+                <TouchableOpacity
+                  style={stylesLocal.addButton}
+                  onPress={addPayment}
+                >
+                  <MaterialIcons name="add" size={resp.fontSize(16)} color="#fff" />
+                  <Text style={stylesLocal.addButtonText}>Add Payment</Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Scrollable Payments Table */}
+              <View style={stylesLocal.productsContainer}>
+                {paymentDetails.length === 0 ? (
+                  <View style={stylesLocal.emptyState}>
+                    <MaterialIcons name="payment" size={resp.fontSize(48)} color={icon} />
+                    <ThemedText style={stylesLocal.emptyStateText}>
+                      No payments added yet
+                    </ThemedText>
+                    <ThemedText style={stylesLocal.emptyStateSubtext}>
+                      Click "Add Payment" to add payment details
+                    </ThemedText>
+                  </View>
+                ) : (
+                  <View>
+                    {/* Payment Table Header */}
+                    <View style={stylesLocal.tableHeader}>
+                      <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellIndex]}>#</Text>
+                      <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellMedium]}>Amount</Text>
+                      <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellAccount]}>Account</Text>
+                      <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellMedium]}>Date</Text>
+                      <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellMedium]}>Reference</Text>
+                      <View style={{ width: resp.horizontalScale(32) }} />
+                    </View>
+
+                    {/* Payment Table Rows */}
+                    {paymentDetails.map((item, index) => (
+                      <PaymentItemComponent
+                        key={item.id}
+                        payment={item}
+                        index={index}
+                        onUpdate={updatePayment}
+                        onRemove={removePayment}
+                        canRemove={paymentDetails.length > 1}
+                        onAccountSelect={(paymentIndex) => {
+                          if (!selectedWarehouse) {
+                            Alert.alert('Warehouse Required', 'Please select a warehouse first to see available bank accounts.');
+                            return;
+                          }
+                          if (filteredBankAccounts.length === 0) {
+                            Alert.alert('No Bank Accounts', 'No bank accounts are available for the selected warehouse.');
+                            return;
+                          }
+                          setSelectedPaymentIndex(paymentIndex);
+                          setShowAccountModal(true);
+                        }}
+                      />
+                    ))}
+                    {PaymentListFooterComponent}
+                  </View>
+                )}
+              </View>
+            </View>
+          </ScrollView>
+
+          {/* Bottom Action Buttons */}
+          <View style={stylesLocal.bottomActions}>
+            <TouchableOpacity
+              style={stylesLocal.cancelButton}
+              onPress={handleCancel}
+            >
+              <Text style={stylesLocal.cancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={stylesLocal.createButton}
+              onPress={handleCreate}
+            >
+              <Text style={stylesLocal.createButtonText}>Create</Text>
+            </TouchableOpacity>
           </View>
 
-          {/* Products & Services - Fixed Header Outside FlatList */}
-          <View style={stylesLocal.section}>
-            {/* Fixed Header */}
-            <View style={stylesLocal.sectionHeader}>
-              <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
-                Products & Services
-              </ThemedText>
-              <TouchableOpacity 
-                style={stylesLocal.addButton}
-                onPress={addProduct}
-              >
-                <MaterialIcons name="add" size={resp.fontSize(16)} color="#fff" />
-                <Text style={stylesLocal.addButtonText}>Add Item</Text>
-              </TouchableOpacity>
-            </View>
-            
-            {/* Scrollable Products List */}
-            <View style={stylesLocal.productsContainer}>
-              <FlatList
-                ref={productsListRef}
-                data={products}
-                renderItem={renderProductItem}
-                keyExtractor={keyExtractor}
-                ListHeaderComponent={ListHeaderComponent}
-                ListFooterComponent={ListFooterComponent}
-                showsVerticalScrollIndicator={true}
-                removeClippedSubviews={false}
-                maxToRenderPerBatch={3}
-                windowSize={5}
-                initialNumToRender={2}
-                updateCellsBatchingPeriod={50}
-                style={{ 
-                  flexGrow: 0,
-                  maxHeight: resp.vertical(600), // Increased height for better visibility
-                  minHeight: resp.vertical(200), // Minimum height to ensure scrolling works
-                  marginBottom: resp.vertical(16)
-                }}
-                contentContainerStyle={{ 
-                  paddingBottom: resp.vertical(16),
-                  flexGrow: 1
-                }}
-                nestedScrollEnabled={true}
-                scrollEventThrottle={16}
-                bounces={true}
-                scrollEnabled={true}
-              />
-            </View>
+          {/* Modals */}
+          <DropdownModal
+            visible={showCustomerModal}
+            title={customerType === 'dealers' ? 'Select Dealer' : 'Select Customer'}
+            options={
+              customerType === 'dealers'
+                ? dealers.map(d => ({ id: d.id.toString(), label: d.name }))
+                : customers.map(c => ({ id: c.serverId || c.id, label: c.name || '' }))
+            }
+            onClose={() => setShowCustomerModal(false)}
+            onSelect={(value: string) => {
+              console.log('Selected customer/dealer ID:', value);
+              if (customerType === 'dealers') {
+                setSelectedCustomer(value);
+              } else {
+                setSelectedCustomer(value);
+              }
+            }}
+          />
+
+          <DropdownModal
+            visible={showWarehouseModal}
+            title="Select Shop / Warehouse"
+            options={warehouses.map(w => ({ id: w.id.toString(), label: w.name }))}
+            onClose={() => setShowWarehouseModal(false)}
+            onSelect={(warehouseId) => {
+              const warehouse = warehouses.find(w => w.id.toString() === warehouseId);
+              if (warehouse) {
+                setSelectedWarehouse(warehouse);
+                // Fetch next invoice number when warehouse is selected
+                fetchNextInvoiceNumber(warehouse.id);
+              }
+            }}
+          />
+
+          <DropdownModal
+            visible={showCategoryModal}
+            title="Select Category"
+            options={categories.map(c => ({ id: c.id.toString(), label: c.name || '' }))}
+            onClose={() => setShowCategoryModal(false)}
+            onSelect={setSelectedCategory}
+          />
+
+          <DropdownModal
+            visible={showDeliveryModal}
+            title="Select Delivery Status"
+            options={[
+              { id: 'pending', label: 'Pending' },
+              { id: 'processing', label: 'Processing' },
+              { id: 'shipped', label: 'Shipped / Dispatched' },
+              { id: 'out-for-delivery', label: 'Out for Delivery' },
+              { id: 'delivered', label: 'Delivered' },
+              { id: 'cancelled', label: 'Cancelled' },
+              { id: 'returned', label: 'Returned' },
+              { id: 'on-hold', label: 'On Hold' },
+              { id: 'failed-delivery', label: 'Failed Delivery' },
+              { id: 'refunded', label: 'Refunded' },
+              { id: 'partially-delivered', label: 'Partially Delivered' }
+            ]}
+            onClose={() => setShowDeliveryModal(false)}
+            onSelect={setDeliveryStatus}
+          />
+
+          <DropdownModal
+            visible={showAccountModal}
+            title="Select Account"
+            options={filteredBankAccounts.length > 0
+              ? filteredBankAccounts.map((acc) => ({
+                id: `account-${acc.id}`,
+                label: `${acc.bankName} - ${acc.holderName} (${acc.accountNumber})`
+              }))
+              : [{ id: 'no-accounts', label: 'No bank accounts available for this warehouse' }]
+            }
+            onClose={() => setShowAccountModal(false)}
+            onSelect={(account) => {
+              // Don't allow selection if no accounts
+              if (account === 'No bank accounts available for this warehouse') {
+                return;
+              }
+
+              // Check if we're in add payment mode (selectedPaymentIndex is -1 or invalid)
+              if (selectedPaymentIndex < 0 || selectedPaymentIndex >= paymentDetails.length) {
+                // Update temp payment for new payment being added
+                updateTempPayment('account', account);
+              } else {
+                // Update existing payment in list
+                const updatedPayments = [...paymentDetails];
+                updatedPayments[selectedPaymentIndex].account = account;
+                setPaymentDetails(updatedPayments);
+              }
+              setShowAccountModal(false);
+            }}
+          />
+
+          <DateModal
+            visible={showDateModal}
+            onClose={() => setShowDateModal(false)}
+            onSelect={(date) => {
+              if (dateModalType === 'issue') {
+                setIssueDate(date);
+              } else {
+                setDueDate(date);
+              }
+            }}
+          />
+        </ThemedView>
+
+        {/* Add Product Bottom Sheet */}
+        <BottomSheet
+          ref={addProductBottomSheetRef}
+          index={-1}
+          snapPoints={productSnapPoints}
+          enablePanDownToClose={true}
+          backdropComponent={renderProductBackdrop}
+          backgroundStyle={{ backgroundColor: bg }}
+          handleIndicatorStyle={{ backgroundColor: icon }}
+        >
+          <View style={stylesLocal.bottomSheetHeader}>
+            <TouchableOpacity onPress={() => addProductBottomSheetRef.current?.close()} style={stylesLocal.modalCloseBtn}>
+              <MaterialIcons name="close" size={resp.fontSize(24)} color={icon} />
+            </TouchableOpacity>
+            <Text style={stylesLocal.bottomSheetTitle}>Add Product/Service</Text>
+            <View style={{ width: resp.horizontalScale(40) }} />
           </View>
 
-          {/* Add Payment - Fixed Header Outside FlatList */}
-          <View style={stylesLocal.section}>
-            {/* Fixed Header */}
-            <View style={stylesLocal.sectionHeader}>
-              <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
-                Add Payment
-              </ThemedText>
-              <TouchableOpacity 
-                style={stylesLocal.addButton}
-                onPress={addPayment}
-              >
-                <MaterialIcons name="add" size={resp.fontSize(16)} color="#fff" />
-                <Text style={stylesLocal.addButtonText}>Add Payment</Text>
-              </TouchableOpacity>
+          <BottomSheetScrollView contentContainerStyle={stylesLocal.bottomSheetContent}>
+            <View style={stylesLocal.modalForm}>
+              {/* Product Name with Search */}
+              <View style={stylesLocal.formRow}>
+                <ThemedText style={stylesLocal.formLabel}>Product Name *</ThemedText>
+                <View style={{ position: 'relative' }}>
+                  <TextInput
+                    style={stylesLocal.formInput}
+                    value={productSearchQuery || tempProduct.product}
+                    onChangeText={(value) => {
+                      setProductSearchQuery(value);
+                      updateTempProduct('product', value);
+                    }}
+                    placeholder="Search or enter product name"
+                    placeholderTextColor={icon}
+                    onFocus={() => {
+                      if (productSuggestions.length > 0) {
+                        setShowProductSuggestions(true);
+                      }
+                    }}
+                  />
+                  {isSearchingProducts && (
+                    <View style={stylesLocal.searchLoader}>
+                      <Text style={{ color: icon, fontSize: resp.fontSize(12) }}>Searching...</Text>
+                    </View>
+                  )}
+                  {showProductSuggestions && productSuggestions.length > 0 && (
+                    <View style={stylesLocal.suggestionsContainer}>
+                      <ScrollView
+                        style={stylesLocal.suggestionsList}
+                        keyboardShouldPersistTaps="handled"
+                        nestedScrollEnabled={true}
+                      >
+                        {productSuggestions.map((item) => (
+                          <TouchableOpacity
+                            key={item.id.toString()}
+                            style={stylesLocal.suggestionItem}
+                            onPress={() => selectProductFromSuggestions(item)}
+                          >
+                            <Text style={[stylesLocal.suggestionText, { color: text }]}>
+                              {item.label}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+                    </View>
+                  )}
+                </View>
+              </View>
+
+              {/* Quantity and Price */}
+              <View style={stylesLocal.row}>
+                <View style={stylesLocal.halfWidth}>
+                  <ThemedText style={stylesLocal.formLabel}>Quantity</ThemedText>
+                  <TextInput
+                    style={stylesLocal.formInput}
+                    value={tempProduct.quantity}
+                    onChangeText={(value) => updateTempProduct('quantity', value)}
+                    placeholder="1"
+                    placeholderTextColor={icon}
+                    keyboardType="numeric"
+                  />
+                </View>
+                <View style={stylesLocal.halfWidth}>
+                  <ThemedText style={stylesLocal.formLabel}>Rate</ThemedText>
+                  <TextInput
+                    style={stylesLocal.formInput}
+                    value={tempProduct.rate}
+                    onChangeText={(value) => updateTempProduct('rate', value)}
+                    placeholder="0.00"
+                    placeholderTextColor={icon}
+                    keyboardType="numeric"
+                  />
+                </View>
+              </View>
+
+              {/* Description */}
+              <View style={stylesLocal.formRow}>
+                <ThemedText style={stylesLocal.formLabel}>Description</ThemedText>
+                <TextInput
+                  style={[stylesLocal.formInput, {
+                    height: resp.vertical(100),
+                    paddingTop: resp.vertical(16),
+                    textAlignVertical: 'top'
+                  }]}
+                  value={tempProduct.description}
+                  onChangeText={(value) => updateTempProduct('description', value)}
+                  placeholder="Enter description"
+                  placeholderTextColor={icon}
+                  multiline
+                />
+              </View>
+
+              {/* Price Display */}
+              <View style={stylesLocal.priceRow}>
+                <ThemedText style={stylesLocal.priceLabel}>Amount:</ThemedText>
+                <ThemedText style={stylesLocal.priceValue}>{tempProduct.price} Rs.</ThemedText>
+              </View>
             </View>
-            
-            {/* Scrollable Payments List */}
-            <View style={stylesLocal.productsContainer}>
-              <FlatList
-                ref={paymentsListRef}
-                data={paymentDetails}
-                renderItem={renderPaymentItem}
-                keyExtractor={paymentKeyExtractor}
-                ListHeaderComponent={PaymentListHeaderComponent}
-                ListFooterComponent={PaymentListFooterComponent}
-                showsVerticalScrollIndicator={true}
-                removeClippedSubviews={false}
-                maxToRenderPerBatch={3}
-                windowSize={5}
-                initialNumToRender={2}
-                updateCellsBatchingPeriod={50}
-                style={{ 
-                  flexGrow: 0,
-                  maxHeight: resp.vertical(500), // Increased height for better visibility
-                  minHeight: resp.vertical(150), // Minimum height to ensure scrolling works
-                  marginBottom: resp.vertical(16)
-                }}
-                contentContainerStyle={{ 
-                  paddingBottom: resp.vertical(16),
-                  flexGrow: 1
-                }}
-                nestedScrollEnabled={true}
-                scrollEventThrottle={16}
-                bounces={true}
-                scrollEnabled={true}
-              />
-            </View>
+          </BottomSheetScrollView>
+
+          <View style={stylesLocal.bottomSheetFooter}>
+            <TouchableOpacity
+              style={[stylesLocal.modalButton, stylesLocal.modalCancelButton]}
+              onPress={() => addProductBottomSheetRef.current?.close()}
+            >
+              <Text style={stylesLocal.modalCancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[stylesLocal.modalButton, stylesLocal.modalAddButton]}
+              onPress={confirmAddProduct}
+            >
+              <Text style={stylesLocal.modalAddButtonText}>Add Product</Text>
+            </TouchableOpacity>
           </View>
-        </ScrollView>
+        </BottomSheet>
 
-        {/* Bottom Action Buttons */}
-        <View style={stylesLocal.bottomActions}>
-          <TouchableOpacity 
-            style={stylesLocal.cancelButton}
-            onPress={handleCancel}
-          >
-            <Text style={stylesLocal.cancelButtonText}>Cancel</Text>
-          </TouchableOpacity>
-          <TouchableOpacity 
-            style={stylesLocal.createButton}
-            onPress={handleCreate}
-          >
-            <Text style={stylesLocal.createButtonText}>Create</Text>
-          </TouchableOpacity>
-        </View>
-
-        {/* Modals */}
-        <DropdownModal
-          visible={showCustomerModal}
-          title={customerType === 'dealers' ? 'Select Dealer' : 'Select Customer'}
-          options={SAMPLE_CUSTOMERS}
-          onClose={() => setShowCustomerModal(false)}
-          onSelect={setSelectedCustomer}
-        />
-
-        <DropdownModal
-          visible={showCategoryModal}
-          title="Select Category"
-          options={SAMPLE_CATEGORIES}
-          onClose={() => setShowCategoryModal(false)}
-          onSelect={setSelectedCategory}
-        />
-
-        <DropdownModal
-          visible={showDeliveryModal}
-          title="Select Delivery Status"
-          options={['Pending', 'Processing', 'Shipped', 'Out for delivery', 'Delivered']}
-          onClose={() => setShowDeliveryModal(false)}
-          onSelect={setDeliveryStatus}
-        />
-
-        <DropdownModal
-          visible={showAccountModal}
-          title="Select Account"
-          options={SAMPLE_ACCOUNTS}
-          onClose={() => setShowAccountModal(false)}
-          onSelect={(account) => {
-            const updatedPayments = [...paymentDetails];
-            updatedPayments[selectedPaymentIndex].account = account;
-            setPaymentDetails(updatedPayments);
-          }}
-        />
-
-        <DateModal
-          visible={showDateModal}
-          onClose={() => setShowDateModal(false)}
-          onSelect={(date) => {
-            if (dateModalType === 'issue') {
-              setIssueDate(date);
-            } else {
-              setDueDate(date);
+        {/* Add Payment Bottom Sheet */}
+        <BottomSheet
+          ref={addPaymentBottomSheetRef}
+          index={-1}
+          snapPoints={paymentSnapPoints}
+          enablePanDownToClose={true}
+          backdropComponent={renderPaymentBackdrop}
+          backgroundStyle={{ backgroundColor: bg }}
+          handleIndicatorStyle={{ backgroundColor: icon }}
+          onChange={(index) => {
+            if (index === -1) {
+              Keyboard.dismiss();
             }
           }}
-        />
-      </ThemedView>
-    </SafeAreaView>
+        >
+          <View style={stylesLocal.bottomSheetHeader}>
+            <TouchableOpacity onPress={() => {
+              Keyboard.dismiss();
+              addPaymentBottomSheetRef.current?.close();
+            }} style={stylesLocal.modalCloseBtn}>
+              <MaterialIcons name="close" size={resp.fontSize(24)} color={icon} />
+            </TouchableOpacity>
+            <Text style={stylesLocal.bottomSheetTitle}>Add Payment</Text>
+            <View style={{ width: resp.horizontalScale(40) }} />
+          </View>
+
+          <BottomSheetScrollView 
+            contentContainerStyle={stylesLocal.bottomSheetContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={stylesLocal.modalForm}>
+              {/* Amount and Account */}
+              <View style={stylesLocal.row}>
+                <View style={stylesLocal.halfWidth}>
+                  <ThemedText style={stylesLocal.formLabel}>Amount *</ThemedText>
+                  <TextInput
+                    style={stylesLocal.formInput}
+                    value={tempPayment.amount}
+                    onChangeText={(value) => updateTempPayment('amount', value)}
+                    placeholder="0"
+                    placeholderTextColor={icon}
+                    keyboardType="numeric"
+                  />
+                </View>
+                <View style={stylesLocal.halfWidth}>
+                  <ThemedText style={stylesLocal.formLabel}>Account *</ThemedText>
+                  <TouchableOpacity
+                    style={stylesLocal.input}
+                    onPress={() => {
+                      if (!selectedWarehouse) {
+                        Alert.alert('Warehouse Required', 'Please select a warehouse first to see available bank accounts.');
+                        return;
+                      }
+                      if (filteredBankAccounts.length === 0) {
+                        Alert.alert('No Bank Accounts', 'No bank accounts are available for the selected warehouse.');
+                        return;
+                      }
+                      setShowAccountModal(true);
+                    }}
+                    activeOpacity={0.6}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  >
+                    <Text style={[stylesLocal.inputText, { color: tempPayment.account ? text : icon }]}>
+                      {tempPayment.account || 'Select Account'}
+                    </Text>
+                    <MaterialIcons name="keyboard-arrow-down" size={resp.fontSize(20)} color={icon} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Date and Reference */}
+              <View style={stylesLocal.row}>
+                <View style={stylesLocal.halfWidth}>
+                  <ThemedText style={stylesLocal.formLabel}>Date</ThemedText>
+                  <TextInput
+                    style={stylesLocal.formInput}
+                    value={tempPayment.date}
+                    onChangeText={(value) => updateTempPayment('date', value)}
+                    placeholder="11/05/2025"
+                    placeholderTextColor={icon}
+                  />
+                </View>
+                <View style={stylesLocal.halfWidth}>
+                  <ThemedText style={stylesLocal.formLabel}>Reference</ThemedText>
+                  <TextInput
+                    style={stylesLocal.formInput}
+                    value={tempPayment.reference}
+                    onChangeText={(value) => updateTempPayment('reference', value)}
+                    placeholder="Enter Reference"
+                    placeholderTextColor={icon}
+                  />
+                </View>
+              </View>
+            </View>
+          </BottomSheetScrollView>
+
+          <View style={stylesLocal.bottomSheetFooter}>
+            <TouchableOpacity
+              style={[stylesLocal.modalButton, stylesLocal.modalCancelButton]}
+              onPress={() => {
+                Keyboard.dismiss();
+                addPaymentBottomSheetRef.current?.close();
+              }}
+            >
+              <Text style={stylesLocal.modalCancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[stylesLocal.modalButton, stylesLocal.modalAddButton]}
+              onPress={confirmAddPayment}
+            >
+              <Text style={stylesLocal.modalAddButtonText}>Add Payment</Text>
+            </TouchableOpacity>
+          </View>
+        </BottomSheet>
+      </SafeAreaView>
+    </GestureHandlerRootView>
   );
 }
 
@@ -1612,12 +2088,9 @@ const createStyles = (resp: ReturnType<typeof useResponsive>, theme: { bg: strin
     },
     // Modal styles
     modalOverlay: {
-      position: 'absolute',
-      top: 0,
-      left: 0,
-      right: 0,
-      bottom: 0,
+      flex: 1,
       backgroundColor: 'rgba(0,0,0,0.6)',
+      justifyContent: 'flex-end',
     },
     modalContent: {
       position: 'absolute',
@@ -1728,5 +2201,267 @@ const createStyles = (resp: ReturnType<typeof useResponsive>, theme: { bg: strin
       color: theme.text,
       fontSize: resp.fontSize(15),
       fontWeight: '500',
+    },
+    // Full modal styles for add product/payment
+    fullModalContent: {
+      height: '90%',
+      backgroundColor: theme.bg === Colors.light.background ? '#ffffff' : '#1e293b',
+      borderTopLeftRadius: resp.horizontalScale(24),
+      borderTopRightRadius: resp.horizontalScale(24),
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: -4 },
+      shadowOpacity: 0.25,
+      shadowRadius: 25,
+      elevation: 20,
+    },
+    modalHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: resp.horizontalScale(20),
+      paddingVertical: resp.vertical(20),
+      borderBottomWidth: 1,
+      borderBottomColor: theme.bg === Colors.light.background ? '#e2e8f0' : '#475569',
+    },
+    modalCloseBtn: {
+      width: resp.horizontalScale(40),
+      height: resp.horizontalScale(40),
+      borderRadius: resp.horizontalScale(20),
+      backgroundColor: theme.bg === Colors.light.background ? '#f1f5f9' : '#334155',
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    modalHeaderTitle: {
+      fontSize: resp.fontSize(18),
+      fontWeight: '600',
+      color: theme.text,
+      letterSpacing: -0.2,
+    },
+    modalScrollContent: {
+      flex: 1,
+      paddingHorizontal: resp.horizontalScale(20),
+      paddingTop: resp.vertical(20),
+    },
+    modalForm: {
+      gap: resp.vertical(16),
+      paddingBottom: resp.vertical(20),
+    },
+    modalFooter: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      paddingHorizontal: resp.horizontalScale(20),
+      paddingVertical: resp.vertical(20),
+      borderTopWidth: 1,
+      borderTopColor: theme.bg === Colors.light.background ? '#e2e8f0' : '#475569',
+      gap: resp.horizontalScale(16),
+      backgroundColor: theme.bg === Colors.light.background ? '#ffffff' : '#1e293b',
+    },
+    modalButton: {
+      flex: 1,
+      height: resp.vertical(52),
+      borderRadius: resp.horizontalScale(12),
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    modalCancelButton: {
+      borderWidth: 1.5,
+      borderColor: '#94a3b8',
+      backgroundColor: 'transparent',
+    },
+    modalCancelButtonText: {
+      color: '#64748b',
+      fontSize: resp.fontSize(16),
+      fontWeight: '600',
+      letterSpacing: 0.2,
+    },
+    modalAddButton: {
+      backgroundColor: theme.tint,
+      shadowColor: theme.tint,
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.3,
+      shadowRadius: 8,
+      elevation: 6,
+    },
+    modalAddButtonText: {
+      color: '#ffffff',
+      fontSize: resp.fontSize(16),
+      fontWeight: '600',
+      letterSpacing: 0.3,
+    },
+    emptyState: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: resp.vertical(60),
+      paddingHorizontal: resp.horizontalScale(40),
+    },
+    emptyStateText: {
+      fontSize: resp.fontSize(16),
+      fontWeight: '600',
+      color: theme.text,
+      marginTop: resp.vertical(16),
+      textAlign: 'center',
+    },
+    emptyStateSubtext: {
+      fontSize: resp.fontSize(14),
+      color: theme.icon,
+      marginTop: resp.vertical(8),
+      textAlign: 'center',
+    },
+    // Table styles
+    tableHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: resp.horizontalScale(12),
+      paddingVertical: resp.vertical(12),
+      backgroundColor: theme.bg === Colors.light.background ? '#f1f5f9' : '#334155',
+      borderTopLeftRadius: resp.horizontalScale(12),
+      borderTopRightRadius: resp.horizontalScale(12),
+      borderBottomWidth: 2,
+      borderBottomColor: theme.bg === Colors.light.background ? '#e2e8f0' : '#475569',
+    },
+    tableHeaderCell: {
+      fontSize: resp.fontSize(13),
+      fontWeight: '600',
+      color: theme.text,
+      textAlign: 'center',
+    },
+    tableRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: resp.horizontalScale(12),
+      paddingVertical: resp.vertical(10),
+      borderBottomWidth: 1,
+      gap: resp.horizontalScale(3),
+      borderBottomColor: theme.bg === Colors.light.background ? '#e2e8f0' : '#475569',
+      backgroundColor: theme.bg === Colors.light.background ? '#ffffff' : '#1e293b',
+    },
+    tableCell: {
+      fontSize: resp.fontSize(13),
+      color: theme.text,
+      paddingHorizontal: resp.horizontalScale(6),
+      paddingVertical: resp.vertical(8),
+      textAlign: 'center',
+      borderRadius: resp.horizontalScale(6),
+      backgroundColor: theme.bg === Colors.light.background ? '#f8fafc' : '#0f172a',
+      borderWidth: 1,
+      borderColor: theme.bg === Colors.light.background ? '#e2e8f0' : '#475569',
+    },
+    tableCellIndex: {
+      width: resp.horizontalScale(35),
+      fontWeight: '600',
+    },
+    tableCellProduct: {
+      flex: 1,
+      textAlign: 'left',
+      marginLeft: resp.horizontalScale(4),
+      marginRight: resp.horizontalScale(4),
+    },
+    tableCellSmall: {
+      width: resp.horizontalScale(55),
+    },
+    tableCellMedium: {
+      width: resp.horizontalScale(70),
+    },
+    tableCellPrice: {
+      width: resp.horizontalScale(75),
+      fontWeight: '600',
+      color: '#059669',
+    },
+    tableDeleteBtn: {
+      width: resp.horizontalScale(32),
+      height: resp.horizontalScale(32),
+      borderRadius: resp.horizontalScale(16),
+      backgroundColor: '#fee2e2',
+      justifyContent: 'center',
+      alignItems: 'center',
+      marginLeft: resp.horizontalScale(4),
+    },
+    paymentTableRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: resp.horizontalScale(12),
+      paddingVertical: resp.vertical(10),
+      borderBottomWidth: 1,
+      borderBottomColor: theme.bg === Colors.light.background ? '#bae6fd' : '#1e40af',
+      backgroundColor: theme.bg === Colors.light.background ? '#f0f9ff' : '#0f172a',
+    },
+    tableCellAccount: {
+      flex: 1,
+      textAlign: 'left',
+      marginLeft: resp.horizontalScale(4),
+      marginRight: resp.horizontalScale(4),
+      justifyContent: 'center',
+    },
+    tableCellText: {
+      fontSize: resp.fontSize(13),
+      color: theme.text,
+    },
+    // Bottom sheet styles
+    bottomSheetHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: resp.horizontalScale(20),
+      paddingVertical: resp.vertical(16),
+      borderBottomWidth: 1,
+      borderBottomColor: theme.bg === Colors.light.background ? '#e2e8f0' : '#475569',
+    },
+    bottomSheetTitle: {
+      fontSize: resp.fontSize(18),
+      fontWeight: '600',
+      color: theme.text,
+      letterSpacing: -0.2,
+    },
+    bottomSheetContent: {
+      paddingHorizontal: resp.horizontalScale(20),
+      paddingBottom: resp.vertical(100),
+    },
+    bottomSheetFooter: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      paddingHorizontal: resp.horizontalScale(20),
+      paddingVertical: resp.vertical(20),
+      borderTopWidth: 1,
+      borderTopColor: theme.bg === Colors.light.background ? '#e2e8f0' : '#475569',
+      gap: resp.horizontalScale(16),
+      backgroundColor: theme.bg === Colors.light.background ? '#ffffff' : '#1e293b',
+    },
+    // Product search styles
+    searchLoader: {
+      position: 'absolute',
+      right: resp.horizontalScale(12),
+      top: '50%',
+      transform: [{ translateY: -resp.fontSize(6) }],
+    },
+    suggestionsContainer: {
+      position: 'absolute',
+      top: '100%',
+      left: 0,
+      right: 0,
+      backgroundColor: theme.bg === Colors.light.background ? '#ffffff' : '#1e293b',
+      borderRadius: resp.horizontalScale(8),
+      marginTop: resp.vertical(4),
+      maxHeight: resp.vertical(200),
+      borderWidth: 1,
+      borderColor: theme.bg === Colors.light.background ? '#e2e8f0' : '#475569',
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.1,
+      shadowRadius: 8,
+      elevation: 5,
+      zIndex: 1000,
+    },
+    suggestionsList: {
+      maxHeight: resp.vertical(200),
+    },
+    suggestionItem: {
+      paddingHorizontal: resp.horizontalScale(16),
+      paddingVertical: resp.vertical(12),
+      borderBottomWidth: 1,
+      borderBottomColor: theme.bg === Colors.light.background ? '#f1f5f9' : '#334155',
+    },
+    suggestionText: {
+      fontSize: resp.fontSize(14),
+      fontWeight: '400',
     },
   });

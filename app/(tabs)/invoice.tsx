@@ -2,123 +2,27 @@ import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
+import useNetwork from '@/hooks/useNetwork';
 import useResponsive from '@/hooks/useResponsive';
+import { customerService } from '@/services/customerService';
+import { invoiceService } from '@/services/invoiceService';
+import { Customer } from '@/types/customer';
+import { Invoice } from '@/types/invoice';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useRouter } from 'expo-router';
-import React, { useMemo, useRef, useState } from 'react';
-import { FlatList, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { useFocusEffect, useRouter } from 'expo-router';
+import React, { useCallback, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, FlatList, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-type InvoiceItem = {
-  id: string;
-  invoiceNo: string;
-  customer: string;
-  issueDate: string;
-  dueDate: string;
-  amount: string;
-  status: 'Paid' | 'Partially Paid' | 'Unpaid';
-};
-
-const SAMPLE_INVOICES: InvoiceItem[] = [
-  {
-    id: '1',
-    invoiceNo: '#INVO00003',
-    customer: 'Yasir Foam Center',
-    issueDate: 'Sep 21, 2025',
-    dueDate: 'Sep 21, 2025',
-    amount: '45,297.44 Rs.',
-    status: 'Partially Paid',
-  },
-  {
-    id: '2',
-    invoiceNo: '#INVO00004',
-    customer: 'Master Display Timber [Zubair]',
-    issueDate: 'Sep 21, 2025',
-    dueDate: 'Sep 21, 2025',
-    amount: '241,596.00 Rs.',
-    status: 'Partially Paid',
-  },
-  {
-    id: '3',
-    invoiceNo: '#INVO00005',
-    customer: 'Acme Supplies',
-    issueDate: 'Oct 01, 2025',
-    dueDate: 'Oct 10, 2025',
-    amount: '12,000.00 Rs.',
-    status: 'Unpaid',
-  },
-  {
-    id: '4',
-    invoiceNo: '#INVO00006',
-    customer: 'Al-Noor Electronics',
-    issueDate: 'Oct 03, 2025',
-    dueDate: 'Oct 15, 2025',
-    amount: '78,950.00 Rs.',
-    status: 'Paid',
-  },
-  {
-    id: '5',
-    invoiceNo: '#INVO00007',
-    customer: 'Bright Furniture Works',
-    issueDate: 'Oct 05, 2025',
-    dueDate: 'Oct 20, 2025',
-    amount: '156,750.00 Rs.',
-    status: 'Unpaid',
-  },
-  {
-    id: '6',
-    invoiceNo: '#INVO00008',
-    customer: 'TechZone Computers',
-    issueDate: 'Oct 08, 2025',
-    dueDate: 'Oct 25, 2025',
-    amount: '92,340.00 Rs.',
-    status: 'Paid',
-  },
-  {
-    id: '7',
-    invoiceNo: '#INVO00009',
-    customer: 'Smart Home Solutions',
-    issueDate: 'Oct 10, 2025',
-    dueDate: 'Oct 30, 2025',
-    amount: '33,120.00 Rs.',
-    status: 'Partially Paid',
-  },
-  {
-    id: '8',
-    invoiceNo: '#INVO00010',
-    customer: 'City Light Traders',
-    issueDate: 'Oct 12, 2025',
-    dueDate: 'Oct 28, 2025',
-    amount: '59,875.00 Rs.',
-    status: 'Paid',
-  },
-  {
-    id: '9',
-    invoiceNo: '#INVO00011',
-    customer: 'Metro Construction Co.',
-    issueDate: 'Oct 14, 2025',
-    dueDate: 'Oct 31, 2025',
-    amount: '420,000.00 Rs.',
-    status: 'Unpaid',
-  },
-  {
-    id: '10',
-    invoiceNo: '#INVO00012',
-    customer: 'Premier Paints & Coatings',
-    issueDate: 'Oct 18, 2025',
-    dueDate: 'Nov 01, 2025',
-    amount: '85,600.00 Rs.',
-    status: 'Paid',
-  },
-];
-
+type InvoiceItem = Invoice;
 
 // We'll define row and badge components inside the main component so they can use
 // responsive sizes and theme-aware colors from hooks.
 
-export default function Invoice() {
+export default function InvoiceScreen() {
   const resp = useResponsive();
   const router = useRouter();
+  const { isConnected } = useNetwork();
   // useThemeColor will pick the right color from Colors.light/dark
   const bg = useThemeColor({}, 'background');
   const text = useThemeColor({}, 'text');
@@ -126,6 +30,19 @@ export default function Invoice() {
   const icon = useThemeColor({}, 'icon');
 
   const stylesLocal = createStyles(resp, { bg, text, tint, icon });
+
+  // Data state
+  const [invoices, setInvoices] = useState<Invoice[]>([]);
+  const [customers, setCustomers] = useState<Customer[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  
+  // Pagination state
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalInvoices, setTotalInvoices] = useState(0);
+  const perPage = 10;
 
   // Filter state
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
@@ -139,10 +56,107 @@ export default function Invoice() {
   const [searchText, setSearchText] = useState('');
   const searchInputRef = useRef<TextInput | null>(null);
 
-  // build unique lists from sample data for dropdowns
-  const customerOptions = useMemo(() => Array.from(new Set(SAMPLE_INVOICES.map((i) => i.customer))), []);
+  // Load invoices from service with pagination
+  const loadInvoices = useCallback(async (page: number = 1, append: boolean = false) => {
+    try {
+      if (append) {
+        setLoadingMore(true);
+      } else {
+        setLoading(true);
+      }
+      
+      console.log(`[Invoice Screen] Loading invoices (page ${page}, online: ${isConnected})...`);
+      
+      if (isConnected) {
+        // Online: Fetch from backend with pagination
+        const result = await invoiceService.getInvoices(page, perPage);
+        console.log(`[Invoice Screen] Loaded ${result.invoices.length} invoices from backend (page ${page}/${result.totalPages})`);
+        
+        if (append) {
+          setInvoices(prev => [...prev, ...result.invoices]);
+        } else {
+          setInvoices(result.invoices);
+        }
+        
+        setCurrentPage(result.currentPage);
+        setTotalPages(result.totalPages);
+        setTotalInvoices(result.total);
+      } else {
+        // Offline: Show only unsynced invoices
+        const result = await invoiceService.getInvoices(1, 100); // Get all unsynced
+        console.log(`[Invoice Screen] Loaded ${result.invoices.length} unsynced invoices (offline mode)`);
+        setInvoices(result.invoices);
+        setCurrentPage(1);
+        setTotalPages(1);
+        setTotalInvoices(result.invoices.length);
+      }
+    } catch (error) {
+      console.error('[Invoice Screen] Failed to load invoices:', error);
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+      setLoadingMore(false);
+    }
+  }, [isConnected, perPage]);
+
+  // Load customers from service
+  const loadCustomers = useCallback(async () => {
+    try {
+      console.log('[Invoice Screen] Loading customers...');
+      const data = await customerService.getAllCustomers();
+      console.log(`[Invoice Screen] Loaded ${data.length} customers`);
+      setCustomers(data);
+    } catch (error) {
+      console.error('[Invoice Screen] Failed to load customers:', error);
+    }
+  }, []);
+
+  // Load invoices when screen is focused
+  useFocusEffect(
+    useCallback(() => {
+      setCurrentPage(1);
+      loadInvoices(1, false);
+      loadCustomers();
+    }, [loadInvoices, loadCustomers])
+  );
+
+  // Handle refresh
+  const onRefresh = useCallback(() => {
+    setRefreshing(true);
+    setCurrentPage(1);
+    loadInvoices(1, false);
+    loadCustomers();
+  }, [loadInvoices, loadCustomers]);
+
+  // Handle load more (pagination)
+  const onLoadMore = useCallback(() => {
+    if (!isConnected || loadingMore || currentPage >= totalPages) {
+      return;
+    }
+    const nextPage = currentPage + 1;
+    console.log(`[Invoice Screen] Loading more invoices (page ${nextPage})`);
+    loadInvoices(nextPage, true);
+  }, [isConnected, loadingMore, currentPage, totalPages, loadInvoices]);
+
+  // Handle delete
+  const handleDelete = useCallback(async (id: string) => {
+    try {
+      await invoiceService.deleteInvoice(id);
+      loadInvoices();
+    } catch (error) {
+      console.error('Failed to delete invoice:', error);
+    }
+  }, [loadInvoices]);
+
+  // build unique lists from invoice data for dropdowns
+  const customerOptions = useMemo(() => {
+    // Get unique customer names from loaded customers
+    const names = customers.map((c) => c.name).filter(Boolean);
+    // Remove duplicates by using Set
+    return Array.from(new Set(names));
+  }, [customers]);
   const statusOptions: InvoiceItem['status'][] = ['Paid', 'Partially Paid', 'Unpaid'];
-  const shopOptions = useMemo(() => ['Main Shop', 'Outlet A', 'Outlet B'], []);
+  const shopOptions = useMemo(() => Array.from(new Set(invoices.map((i) => i.warehouseName))).filter(Boolean) as string[], [invoices]);
 
   // helper to format the date similarly to sample data
   const formatDateLabel = (d: Date | null) => {
@@ -163,6 +177,22 @@ export default function Invoice() {
     const width = resp.width;
     const router = useRouter();
 
+    // Format amount with commas and Rs.
+    const formatAmount = (amount: string) => {
+      const num = parseFloat(amount);
+      return `${num.toLocaleString('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} Rs.`;
+    };
+
+    // Format date to readable format
+    const formatDate = (dateStr: string) => {
+      try {
+        const date = new Date(dateStr);
+        return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      } catch {
+        return dateStr;
+      }
+    };
+
     return (
   <TouchableOpacity activeOpacity={0.9} style={stylesLocal.rowWrapper} onPress={() => router.push({ pathname: '/(tabs)/invoice/[id]', params: { id: item.id } })} accessibilityRole="button">
         <ThemedView style={[stylesLocal.card, { width: '100%' }]}>
@@ -171,14 +201,14 @@ export default function Invoice() {
               <ThemedText type="link" style={stylesLocal.idText}>{item.invoiceNo}</ThemedText>
             </TouchableOpacity>
 
-            <ThemedText type="defaultSemiBold" style={[stylesLocal.name, { color: text }]}>{item.customer}</ThemedText>
-            <ThemedText style={stylesLocal.meta}>{item.issueDate} · {item.dueDate}</ThemedText>
+            <ThemedText type="defaultSemiBold" style={[stylesLocal.name, { color: text }]}>{item.customerName}</ThemedText>
+            <ThemedText style={stylesLocal.meta}>{formatDate(item.issueDate)} · {item.dueDate ? formatDate(item.dueDate) : formatDate(item.issueDate)}</ThemedText>
           </View>
 
           <View style={stylesLocal.right}>
             <View style={stylesLocal.balanceBlock}>
               <ThemedText type="subtitle" style={stylesLocal.smallLabel}>Due Amount</ThemedText>
-              <ThemedText type="defaultSemiBold" style={stylesLocal.balance}>{item.amount}</ThemedText>
+              <ThemedText type="defaultSemiBold" style={stylesLocal.balance}>{formatAmount(item.dueAmount)}</ThemedText>
             </View>
 
             <View style={stylesLocal.balanceBlock}>
@@ -200,7 +230,11 @@ export default function Invoice() {
               >
                 <MaterialIcons name="edit" size={resp.fontSize(14)} color="#fff" />
               </TouchableOpacity>
-              <TouchableOpacity style={[stylesLocal.iconBtn, { backgroundColor: '#ff4d6d' }]} accessibilityLabel={`Delete ${item.invoiceNo}`}>
+              <TouchableOpacity 
+                style={[stylesLocal.iconBtn, { backgroundColor: '#ff4d6d' }]} 
+                accessibilityLabel={`Delete ${item.invoiceNo}`}
+                onPress={() => handleDelete(item.id)}
+              >
                 <MaterialIcons name="delete" size={resp.fontSize(14)} color="#fff" />
               </TouchableOpacity>
             </View>
@@ -218,8 +252,8 @@ export default function Invoice() {
         <View style={stylesLocal.modalContent}>
           <Text style={stylesLocal.modalTitle}>{title}</Text>
           <ScrollView>
-            {options.map((opt) => (
-              <TouchableOpacity key={opt} style={stylesLocal.modalItem} onPress={() => { onSelect(opt); onClose(); }}>
+            {options.map((opt, index) => (
+              <TouchableOpacity key={`${opt}-${index}`} style={stylesLocal.modalItem} onPress={() => { onSelect(opt); onClose(); }}>
                 <Text style={stylesLocal.modalItemText}>{opt}</Text>
               </TouchableOpacity>
             ))}
@@ -294,26 +328,43 @@ export default function Invoice() {
   // filtered list of invoices (memoized)
   const filtered = useMemo(() => {
     const q = searchText.trim().toLowerCase();
-    return SAMPLE_INVOICES.filter((inv) => {
-      if (selectedCustomer && inv.customer !== selectedCustomer) return false;
+    const filteredList = invoices.filter((inv) => {
+      if (selectedCustomer && inv.customerName !== selectedCustomer) return false;
       if (selectedStatus && inv.status !== selectedStatus) return false;
-      if (selectedShop && !inv.customer.toLowerCase().includes(selectedShop.toLowerCase())) return false;
+      if (selectedShop && inv.warehouseName !== selectedShop) return false;
       if (selectedDate) {
         const dLabel = formatDateLabel(selectedDate);
-        if (inv.issueDate !== dLabel && inv.dueDate !== dLabel) return false;
+        const invIssueDate = new Date(inv.issueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+        const invDueDate = inv.dueDate ? new Date(inv.dueDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : invIssueDate;
+        if (invIssueDate !== dLabel && invDueDate !== dLabel) return false;
       }
 
       if (q) {
         // match invoice number, customer name or amount (case-insensitive)
         const invoiceNo = inv.invoiceNo.toLowerCase();
-        const customer = inv.customer.toLowerCase();
-        const amount = inv.amount.toLowerCase();
+        const customer = inv.customerName.toLowerCase();
+        const amount = inv.dueAmount.toLowerCase();
         if (!invoiceNo.includes(q) && !customer.includes(q) && !amount.includes(q)) return false;
       }
 
       return true;
     });
-  }, [selectedCustomer, selectedStatus, selectedShop, selectedDate, searchText]);
+
+    // Sort: unsynced invoices first (by creation date desc), then synced invoices
+    return filteredList.sort((a, b) => {
+      // If offline mode, both are unsynced - sort by createdAt
+      if (!isConnected) {
+        return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+      }
+      
+      // If one is unsynced and other is synced, unsynced comes first
+      if (a.synced === 0 && b.synced !== 0) return -1;
+      if (a.synced !== 0 && b.synced === 0) return 1;
+      
+      // If both have same sync status, sort by creation date (newest first)
+      return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
+    });
+  }, [selectedCustomer, selectedStatus, selectedShop, selectedDate, searchText, invoices, isConnected]);
 
   return (
     <SafeAreaView style={{ flex: 1 }} edges={["bottom"]}>
@@ -393,12 +444,69 @@ export default function Invoice() {
           />
         </View>
 
-        <FlatList
-          data={filtered}
-          keyExtractor={(i) => i.id}
-          renderItem={({ item }) => <InvoiceRow item={item} />}
-          contentContainerStyle={{ paddingBottom: resp.vertical(30) }}
-        />
+        {loading ? (
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+            <ActivityIndicator size="large" color={tint} />
+            <ThemedText style={{ marginTop: 10 }}>
+              {isConnected ? 'Loading invoices...' : 'Loading unsynced invoices...'}
+            </ThemedText>
+          </View>
+        ) : (
+          <>
+            {!isConnected && (
+              <View style={stylesLocal.offlineBanner}>
+                <MaterialIcons name="cloud-off" size={resp.fontSize(16)} color="#ff9800" />
+                <ThemedText style={stylesLocal.offlineText}>
+                  Offline mode - Showing {totalInvoices} unsynced invoice{totalInvoices !== 1 ? 's' : ''}
+                </ThemedText>
+              </View>
+            )}
+            <FlatList
+              data={filtered}
+              keyExtractor={(i) => i.id}
+              renderItem={({ item }) => <InvoiceRow item={item} />}
+              contentContainerStyle={{ paddingBottom: resp.vertical(30) }}
+              refreshing={refreshing}
+              onRefresh={onRefresh}
+              onEndReached={onLoadMore}
+              onEndReachedThreshold={0.5}
+              ListEmptyComponent={
+                <View style={{ padding: 20, alignItems: 'center' }}>
+                  <ThemedText>
+                    {isConnected ? 'No invoices found' : 'No unsynced invoices'}
+                  </ThemedText>
+                </View>
+              }
+              ListFooterComponent={
+                loadingMore ? (
+                  <View style={{ padding: 20, alignItems: 'center' }}>
+                    <ActivityIndicator size="small" color={tint} />
+                    <ThemedText style={{ marginTop: 5, fontSize: resp.fontSize(12) }}>
+                      Loading more...
+                    </ThemedText>
+                  </View>
+                ) : isConnected && currentPage < totalPages ? (
+                  <View style={{ padding: 20, alignItems: 'center' }}>
+                    <TouchableOpacity
+                      style={[stylesLocal.loadMoreBtn, { backgroundColor: tint }]}
+                      onPress={onLoadMore}
+                    >
+                      <ThemedText style={stylesLocal.loadMoreText}>
+                        Load More (Page {currentPage + 1}/{totalPages})
+                      </ThemedText>
+                    </TouchableOpacity>
+                  </View>
+                ) : isConnected && totalInvoices > 0 ? (
+                  <View style={{ padding: 20, alignItems: 'center' }}>
+                    <ThemedText style={{ fontSize: resp.fontSize(12), color: icon }}>
+                      Showing all {totalInvoices} invoices
+                    </ThemedText>
+                  </View>
+                ) : null
+              }
+            />
+          </>
+        )}
       </ThemedView>
     </SafeAreaView>
   );
@@ -564,4 +672,29 @@ const createStyles = (resp: ReturnType<typeof useResponsive>, theme: { bg: strin
     headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
     addButton: { paddingVertical: resp.vertical(6), paddingHorizontal: resp.horizontalScale(10), borderRadius: resp.horizontalScale(8) },
     addButtonText: { color: '#fff', fontSize: resp.fontSize(13) },
+    offlineBanner: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      backgroundColor: theme.bg === Colors.light.background ? '#fff3e0' : '#3d2d1f',
+      padding: resp.horizontalScale(12),
+      borderRadius: resp.horizontalScale(8),
+      marginBottom: resp.vertical(12),
+      gap: resp.horizontalScale(8),
+    },
+    offlineText: {
+      color: '#ff9800',
+      fontSize: resp.fontSize(13),
+      fontWeight: '600',
+    },
+    loadMoreBtn: {
+      paddingVertical: resp.vertical(10),
+      paddingHorizontal: resp.horizontalScale(20),
+      borderRadius: resp.horizontalScale(8),
+    },
+    loadMoreText: {
+      color: '#fff',
+      fontSize: resp.fontSize(13),
+      fontWeight: '600',
+    },
   });

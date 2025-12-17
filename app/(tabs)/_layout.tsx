@@ -49,15 +49,15 @@ export default function TabLayout() {
             options={{ headerShown: false, title: 'Invoice' }}
           />
 
-          <Tabs.Screen
+          {/* <Tabs.Screen
             name="ledger"
             options={{ headerShown: false, title: 'Ledger' }}
-          />
+          /> */}
 
-          <Tabs.Screen
+          {/* <Tabs.Screen
             name="payments"
             options={{ headerShown: false, title: 'Payments' }}
-          />
+          /> */}
 
           <Tabs.Screen
             name="index"
