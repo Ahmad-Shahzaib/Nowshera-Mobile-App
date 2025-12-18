@@ -3,6 +3,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Colors } from '@/constants/theme';
 import { useSync } from '@/context/SyncContext';
 import { useThemeColor } from '@/hooks/use-theme-color';
+import useNetwork from '@/hooks/useNetwork';
 import useResponsive from '@/hooks/useResponsive';
 import { bankAccountService } from '@/services/bankAccountService';
 import { invoiceService } from '@/services/invoiceService';
@@ -58,6 +59,7 @@ export default function CreateInvoice() {
   const icon = useThemeColor({}, 'icon');
   const router = useRouter();
   const { customers, dealers } = useSync();
+  const isOnline = useNetwork();
 
   // Refs for scrolling
   const mainScrollViewRef = useRef<ScrollView>(null);
@@ -95,7 +97,7 @@ export default function CreateInvoice() {
   // Payment details
   const [paymentDetails, setPaymentDetails] = useState<PaymentDetail[]>([]);
 
-  // Modal states
+  // Modal states 
   const [showCustomerModal, setShowCustomerModal] = useState(false);
   const [showWarehouseModal, setShowWarehouseModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
@@ -141,6 +143,51 @@ export default function CreateInvoice() {
   // Bank accounts state
   const [bankAccounts, setBankAccounts] = useState<BankAccountRow[]>([]);
   const [filteredBankAccounts, setFilteredBankAccounts] = useState<BankAccountRow[]>([]);
+
+  // Reset form function
+  const resetForm = useCallback(() => {
+    setCustomerType('customer');
+    setSelectedCustomer(null);
+    setSelectedWarehouse(null);
+    setWalkInCustomerName('');
+    setWalkInContactNumber('');
+    setWalkInAddress('');
+    setIssueDate(new Date());
+    setDueDate(new Date());
+    setDeliveryStatus('Pending');
+    setInvoiceNumber('');
+    setReferenceNumber('');
+    setSelectedCategory(null);
+    setMasterDiscount('');
+    setProducts([]);
+    setPaymentDetails([]);
+    setInvoiceNumberDisabled(true);
+    setFilteredBankAccounts([]);
+
+    // Reset temp states
+    setTempProduct({
+      id: '',
+      product: '',
+      shop: '',
+      quantity: '1',
+      rate: '0',
+      discount: '0',
+      tax: '0',
+      description: '',
+      price: '0',
+    });
+
+    setTempPayment({
+      id: '',
+      amount: '0',
+      account: '',
+      date: new Date().toLocaleDateString(),
+      reference: '',
+    });
+
+    // Scroll to top
+    mainScrollViewRef.current?.scrollTo({ y: 0, animated: true });
+  }, []);
 
   // Calculate totals with memoization
   const calculateTotals = useCallback(() => {
@@ -427,7 +474,7 @@ export default function CreateInvoice() {
     setTimeout(() => {
       addPaymentBottomSheetRef.current?.close();
     }, 100);
-    
+
     // Reset temp payment
     setTempPayment({
       id: '',
@@ -518,9 +565,9 @@ export default function CreateInvoice() {
           return customerId === selectedCustomer || customerId?.toString() === selectedCustomer;
         });
         customerName = customer?.name || 'Unknown Customer';
-        console.log('[CreateInvoice] Customer lookup:', { 
-          selectedCustomer, 
-          customer, 
+        console.log('[CreateInvoice] Customer lookup:', {
+          selectedCustomer,
+          customer,
           name: customerName,
           allCustomers: customers.map(c => ({ id: c.id, serverId: c.serverId, name: c.name }))
         });
@@ -545,8 +592,8 @@ export default function CreateInvoice() {
           taxTotal: '0',
           grandTotal: totals.total,
           dueAmount: totals.due,
-          status: (parseFloat(totals.due) === 0 ? 'Paid' : 
-                  parseFloat(totals.paid) > 0 ? 'Partially Paid' : 'Unpaid') as 'Paid' | 'Partially Paid' | 'Unpaid',
+          status: (parseFloat(totals.due) === 0 ? 'Paid' :
+            parseFloat(totals.paid) > 0 ? 'Partially Paid' : 'Unpaid') as 'Paid' | 'Partially Paid' | 'Unpaid',
         },
         items: products.map(product => {
           // Use the stored product ID from when it was selected
@@ -564,7 +611,7 @@ export default function CreateInvoice() {
           // Extract bank account ID from "account-{id}" format
           const accountIdMatch = payment.account.match(/^account-(\d+)$/);
           const accountId = accountIdMatch ? parseInt(accountIdMatch[1], 10) : null;
-          
+
           // Find account by ID to get the chart_account_id
           const account = filteredBankAccounts.find(acc => acc.id === accountId);
           console.log('[CreateInvoice] Mapping payment:', payment, 'Account ID:', accountId, 'Found account:', account);
@@ -584,9 +631,19 @@ export default function CreateInvoice() {
       const result = await invoiceService.createInvoice(invoiceData);
 
       if (result) {
-        Alert.alert('Success', 'Invoice created successfully!', [
-          { text: 'OK', onPress: () => router.back() }
-        ]);
+        Alert.alert(
+          'Success',
+          'Invoice created successfully!',
+          [
+            {
+              text: 'Create Another',
+              onPress: () => {
+                resetForm();
+              }
+            },
+            { text: 'Done', onPress: () => router.back() }
+          ]
+        );
       } else {
         Alert.alert('Error', 'Failed to create invoice. Please try again.');
       }
@@ -624,13 +681,6 @@ export default function CreateInvoice() {
     return (
       <View style={stylesLocal.tableRow}>
         <Text style={[stylesLocal.tableCell, stylesLocal.tableCellIndex]}>{index + 1}</Text>
-        {/* <TextInput
-          style={[stylesLocal.tableCell, stylesLocal.tableCellProduct]}
-          value={product.product}
-          onChangeText={(value) => onUpdate(product.id, 'product', value)}
-          placeholder="Product"
-          placeholderTextColor={icon}
-        /> */}
         <TextInput
           style={[stylesLocal.tableCell, stylesLocal.tableCellSmall]}
           value={product.quantity}
@@ -779,24 +829,57 @@ export default function CreateInvoice() {
     onClose: () => void;
     onSelect: (value: string) => void;
   }) {
+    const [searchQuery, setSearchQuery] = useState('');
+
+    const filteredOptions = options.filter((option) =>
+      option.label.toLowerCase().includes(searchQuery.toLowerCase())
+    );
+
     return (
       <Modal visible={visible} transparent animationType="fade">
         <Pressable style={stylesLocal.modalOverlay} onPress={onClose} />
         <View style={stylesLocal.modalContent}>
           <Text style={stylesLocal.modalTitle}>{title}</Text>
+
+          {/* Search Input */}
+          <TextInput
+            style={{
+              borderWidth: 1,
+              borderColor: icon,
+              borderRadius: 8,
+              paddingHorizontal: resp.horizontalScale(12),
+              paddingVertical: resp.vertical(10),
+              marginHorizontal: resp.horizontalScale(12),
+              marginBottom: resp.vertical(12),
+              color: text,
+              fontSize: resp.fontSize(14),
+            }}
+            placeholder="Search..."
+            placeholderTextColor={icon}
+            value={searchQuery}
+            onChangeText={setSearchQuery}
+          />
+
           <ScrollView style={{ maxHeight: resp.vertical(300) }}>
-            {options.map((option) => (
-              <TouchableOpacity
-                key={option.id}
-                style={stylesLocal.modalItem}
-                onPress={() => {
-                  onSelect(option.id);
-                  onClose();
-                }}
-              >
-                <Text style={stylesLocal.modalItemText}>{option.label}</Text>
-              </TouchableOpacity>
-            ))}
+            {filteredOptions.length > 0 ? (
+              filteredOptions.map((option) => (
+                <TouchableOpacity
+                  key={option.id}
+                  style={stylesLocal.modalItem}
+                  onPress={() => {
+                    onSelect(option.id);
+                    setSearchQuery('');
+                    onClose();
+                  }}
+                >
+                  <Text style={stylesLocal.modalItemText}>{option.label}</Text>
+                </TouchableOpacity>
+              ))
+            ) : (
+              <Text style={[stylesLocal.modalItemText, { textAlign: 'center', paddingVertical: resp.vertical(16), color: icon }]}>
+                No results found
+              </Text>
+            )}
           </ScrollView>
         </View>
       </Modal>
@@ -1183,38 +1266,40 @@ export default function CreateInvoice() {
             </View>
 
             {/* Invoice Number and Reference */}
-            <View style={stylesLocal.section}>
-              <View style={stylesLocal.row}>
-                <View style={stylesLocal.halfWidth}>
-                  <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
-                    Invoice Number {isLoadingInvoiceNumber && '(Loading...)'}
-                  </ThemedText>
-                  <TextInput
-                    style={[
-                      stylesLocal.textInput,
-                      (invoiceNumberDisabled || isLoadingInvoiceNumber) && { backgroundColor: '#f0f0f0', opacity: 0.6 }
-                    ]}
-                    value={invoiceNumber}
-                    onChangeText={setInvoiceNumber}
-                    placeholder="Select warehouse first"
-                    placeholderTextColor={icon}
-                    editable={!invoiceNumberDisabled && !isLoadingInvoiceNumber}
-                  />
-                </View>
-                <View style={stylesLocal.halfWidth}>
-                  <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
-                    Ref Number
-                  </ThemedText>
-                  <TextInput
-                    style={stylesLocal.textInput}
-                    value={referenceNumber}
-                    onChangeText={setReferenceNumber}
-                    placeholder="Enter Ref Number"
-                    placeholderTextColor={icon}
-                  />
+            {isOnline && (
+              <View style={stylesLocal.section}>
+                <View style={stylesLocal.row}>
+                  <View style={stylesLocal.halfWidth}>
+                    <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
+                      Invoice Number {isLoadingInvoiceNumber && '(Loading...)'}
+                    </ThemedText>
+                    <TextInput
+                      style={[
+                        stylesLocal.textInput,
+                        (invoiceNumberDisabled || isLoadingInvoiceNumber) && { backgroundColor: '#f0f0f0', opacity: 0.6 }
+                      ]}
+                      value={invoiceNumber}
+                      onChangeText={setInvoiceNumber}
+                      placeholder="Select warehouse first"
+                      placeholderTextColor={icon}
+                      editable={!invoiceNumberDisabled && !isLoadingInvoiceNumber}
+                    />
+                  </View>
+                  <View style={stylesLocal.halfWidth}>
+                    <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
+                      Ref Number
+                    </ThemedText>
+                    <TextInput
+                      style={stylesLocal.textInput}
+                      value={referenceNumber}
+                      onChangeText={setReferenceNumber}
+                      placeholder="Enter Ref Number"
+                      placeholderTextColor={icon}
+                    />
+                  </View>
                 </View>
               </View>
-            </View>
+            )}
 
             {/* Products & Services - Table Format */}
             <View style={stylesLocal.section}>
@@ -1426,7 +1511,7 @@ export default function CreateInvoice() {
             title="Select Account"
             options={filteredBankAccounts.length > 0
               ? filteredBankAccounts.map((acc) => ({
-                id: `account-${acc.id}`,
+                id: `${acc.bankName}`,
                 label: `${acc.bankName} - ${acc.holderName} (${acc.accountNumber})`
               }))
               : [{ id: 'no-accounts', label: 'No bank accounts available for this warehouse' }]
@@ -1626,7 +1711,7 @@ export default function CreateInvoice() {
             <View style={{ width: resp.horizontalScale(40) }} />
           </View>
 
-          <BottomSheetScrollView 
+          <BottomSheetScrollView
             contentContainerStyle={stylesLocal.bottomSheetContent}
             keyboardShouldPersistTaps="handled"
           >
@@ -1776,10 +1861,7 @@ const createStyles = (resp: ReturnType<typeof useResponsive>, theme: { bg: strin
     productsContainer: {
       flex: 1,
       backgroundColor: theme.bg === Colors.light.background ? '#ffffff' : '#1e293b',
-      // borderRadius: resp.horizontalScale(16),
       padding: resp.horizontalScale(4),
-      // borderWidth: 1,
-      // borderColor: theme.bg === Colors.light.background ? '#e2e8f0' : '#475569',
       shadowColor: '#000',
       shadowOffset: { width: 0, height: 4 },
       shadowOpacity: 0.08,
@@ -1792,6 +1874,9 @@ const createStyles = (resp: ReturnType<typeof useResponsive>, theme: { bg: strin
       gap: resp.horizontalScale(16),
     },
     halfWidth: {
+      flex: 1,
+    },
+    fullWidth: {
       flex: 1,
     },
     input: {

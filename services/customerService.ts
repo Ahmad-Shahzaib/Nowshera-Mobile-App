@@ -281,7 +281,7 @@ export const customerService = {
           const response = await axios.post<{ is_success: boolean; message: string; data: Customer }>('/customers/store', customerData);
 
           if (response.data.is_success) {
-            await localDB.upsertCustomer(customerToLocalRow(response.data.data));
+            // await localDB.upsertCustomer(customerToLocalRow(response.data.data));
             return response.data.data;
           }
         } catch (error: any) {

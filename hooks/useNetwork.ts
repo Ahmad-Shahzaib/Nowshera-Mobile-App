@@ -26,6 +26,8 @@ export default function useNetwork() {
       if (!mountedRef.current) return;
       const reachable = typeof state.isInternetReachable === 'boolean' ? state.isInternetReachable : state.isConnected;
       setIsConnected(reachable ?? false);
+      // setIsConnected(false);
+
     } catch (e) {
       if (!mountedRef.current) return;
       setIsConnected(false);

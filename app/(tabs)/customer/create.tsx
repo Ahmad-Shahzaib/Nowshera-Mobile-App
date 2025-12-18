@@ -48,7 +48,6 @@ export default function CreateCustomer() {
     setIsSubmitting(true);
 
     try {
-      // Prepare the payload according to the API structure
       const payload = {
         name: name.trim(),
         contact: contact.trim(),
@@ -101,9 +100,19 @@ export default function CreateCustomer() {
           });
 
           await refresh();
-          Alert.alert('Success', 'Customer created successfully', [
-            { text: 'OK', onPress: () => router.back() }
-          ]);
+          // Reset form fields
+          setName('');
+          setContact('');
+          setEmail('');
+          setTaxNumber('');
+          setOpeningBalance('0');
+          setOpeningBalanceType('Dr');
+          setAddress('');
+          setCity('');
+          setStateVal('');
+          setCountry('');
+          setZip('');
+          Alert.alert('Success', 'Customer created successfully. Form cleared for next entry.');
         } catch (e: any) {
           // If server call fails, fall back to saving locally as unsynced
           console.warn('[CreateCustomer] server create failed, saving locally', e);

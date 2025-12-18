@@ -111,7 +111,7 @@ export default function InvoiceScreen() {
     }
   }, []);
 
-  // Load invoices when screen is focused
+  
   useFocusEffect(
     useCallback(() => {
       setCurrentPage(1);
