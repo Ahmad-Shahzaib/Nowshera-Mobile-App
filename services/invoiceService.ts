@@ -1,5 +1,5 @@
 import { getAxiosInstance } from '@/lib/axios';
-import { Invoice, InvoiceApi, InvoiceApiResponse } from '@/types/invoice';
+import { Invoice, InvoiceApi, InvoiceApiResponse, InvoiceDetailApi, InvoiceDetailApiResponse, InvoiceDetailItem, InvoicePayment, InvoiceTotals } from '@/types/invoice';
 import * as Network from 'expo-network';
 import localDB from './localDatabase';
 
@@ -368,32 +368,124 @@ export const invoiceService = {
   /**
    * Update an invoice - OFFLINE FIRST
    */
-  async updateInvoice(id: string, updates: Partial<Invoice>): Promise<boolean> {
+  async updateInvoice(
+    invoiceId: string | number,
+    updateData: {
+      issue_date: string;
+      due_date: string;
+      category_id: number;
+      warehouse_id: number;
+      customer_id: number;
+      delivery_status: string;
+      sale_type: string;
+      ref_number?: string;
+      discount_apply: number;
+      items: Array<{
+        id: number;
+        quantity: number;
+        price: number;
+        description: string;
+      }>;
+      payments: Array<{
+        date: string;
+        amount: number;
+        account_id: number;
+        payment_method: number;
+        reference: string;
+        description?: string;
+      }>;
+    }
+  ): Promise<{
+    success: boolean;
+    message: string;
+    total: number;
+    paid: number;
+    due: number;
+  }> {
     try {
-      await localDB.updateInvoice(id, {
-        ...updates,
-        synced: 0, // Mark as unsynced
-      });
-
-      // Try to sync to API if online
+      // Check network status
       const online = await isOnline();
+      console.log(`[invoiceService] updateInvoice - invoiceId: ${invoiceId}, online: ${online}`);
+
       if (online) {
         try {
           const axios = getAxiosInstance();
-          // TODO: Implement actual API endpoint for updating invoices
-          // const response = await axios.put(`/invoices/${id}`, updates);
-          // if (response.data.success) {
-          //   await localDB.markInvoiceAsSynced(id);
-          // }
-        } catch (error) {
-          console.error('[invoiceService] API sync failed, will retry later:', error);
-        }
-      }
+          const response = await axios.put(
+            `/invoice/${invoiceId}/update`,
+            updateData
+          );
+          
+          console.log(`[invoiceService] API Response:`, response.data);
 
-      return true;
-    } catch (error) {
-      console.error('[invoiceService] updateInvoice error:', error);
-      return false;
+          // Ensure response.data exists and has the expected structure
+          if (!response.data) {
+            console.warn(`[invoiceService] API returned empty response`);
+            return {
+              success: false,
+              message: 'Empty response from server',
+              total: 0,
+              paid: 0,
+              due: 0,
+            };
+          }
+
+          if (response.data.success) {
+            console.log(`[invoiceService] Invoice ${invoiceId} updated successfully`);
+            // Safely extract numeric values with proper type checking
+            const total = typeof response.data.total === 'number' ? response.data.total : (typeof response.data.data?.total === 'number' ? response.data.data.total : 0);
+            const paid = typeof response.data.paid === 'number' ? response.data.paid : (typeof response.data.data?.paid === 'number' ? response.data.data.paid : 0);
+            const due = typeof response.data.due === 'number' ? response.data.due : (typeof response.data.data?.due === 'number' ? response.data.data.due : 0);
+            
+            return {
+              success: true,
+              message: response.data.message || 'Invoice updated successfully',
+              total: total ?? 0,
+              paid: paid ?? 0,
+              due: due ?? 0,
+            };
+          } else {
+            console.warn(`[invoiceService] API returned success: false`);
+            console.warn(`[invoiceService] Response data:`, response.data);
+            return {
+              success: false,
+              message: response.data?.message || 'Failed to update invoice',
+              total: 0,
+              paid: 0,
+              due: 0,
+            };
+          }
+        } catch (error: any) {
+          console.error(`[invoiceService] API update invoice failed:`, error.message);
+          console.error(`[invoiceService] Error details:`, error.response?.data);
+          return {
+            success: false,
+            message: error.response?.data?.message || error.message || 'Failed to update invoice',
+            total: 0,
+            paid: 0,
+            due: 0,
+          };
+        }
+      } else {
+        // Offline mode - save to local DB
+        console.log(`[invoiceService] Offline mode - saving to local DB`);
+        // TODO: Implement local DB update if needed
+        return {
+          success: false,
+          message: 'Update requires internet connection',
+          total: 0,
+          paid: 0,
+          due: 0,
+        };
+      }
+    } catch (error: any) {
+      console.error('[invoiceService] Error updating invoice:', error);
+      return {
+        success: false,
+        message: error.message || 'Failed to update invoice',
+        total: 0,
+        paid: 0,
+        due: 0,
+      };
     }
   },
 
@@ -497,6 +589,120 @@ export const invoiceService = {
       }
     } catch (error) {
       console.error('[invoiceService] syncInvoices error:', error);
+    }
+  },
+
+  /**
+   * Fetch invoice detail with items and payments - OFFLINE FIRST
+   * GET /invoice/:id/edit endpoint
+   */
+  async getInvoiceDetail(invoiceId: string | number): Promise<{
+    invoice: InvoiceDetailApi;
+    items: InvoiceDetailItem[];
+    payments: InvoicePayment[];
+    totals: InvoiceTotals;
+  } | null> {
+    try {
+      // Check network status
+      const online = await isOnline();
+      console.log(`[invoiceService] getInvoiceDetail - invoiceId: ${invoiceId}, online: ${online}`);
+      
+      if (online) {
+        try {
+          const axios = getAxiosInstance();
+          // Use the invoice ID for API call
+          const response = await axios.get<InvoiceDetailApiResponse>(`/invoice/${invoiceId}/edit`);
+          console.log(`[invoiceService] API Response:`, response.data);
+
+          if (response.data.success) {
+            console.log(`[invoiceService] Fetched invoice detail ${invoiceId} from API`);
+            return {
+              invoice: response.data.invoice,
+              items: response.data.items,
+              payments: response.data.payments,
+              totals: response.data.totals,
+            };
+          } else {
+            console.warn(`[invoiceService] API returned success: false`);
+          }
+        } catch (error: any) {
+          console.warn(`[invoiceService] API fetch invoice detail failed:`, error.message);
+          console.warn(`[invoiceService] Error details:`, error.response?.data);
+          // Fall through to offline mode
+        }
+      }
+
+      // Offline: Return from local DB (try both id and serverId)
+      console.log(`[invoiceService] Falling back to local DB for invoiceId: ${invoiceId}`);
+      let localInvoice = await localDB.getInvoiceById(invoiceId.toString());
+      
+      // If not found and invoiceId looks like a number, try as serverId
+      if (!localInvoice && typeof invoiceId === 'string' && /^\d+$/.test(invoiceId)) {
+        // Try to find by serverId instead
+        const allInvoices = await localDB.getInvoices();
+        localInvoice = allInvoices.find(inv => inv.serverId === invoiceId.toString()) || null;
+      }
+
+      if (!localInvoice) {
+        console.warn(`[invoiceService] Invoice ${invoiceId} not found in local DB`);
+        return null;
+      }
+
+      console.log(`[invoiceService] Found invoice in local DB`);
+      const items = await localDB.getInvoiceItems(localInvoice.id);
+      const payments = await localDB.getInvoicePayments(localInvoice.id);
+
+      // Convert local data to match API response format
+      return {
+        invoice: {
+          id: parseInt(localInvoice.serverId || '0') || 0,
+          invoice_number: parseInt(localInvoice.invoiceNo.replace('#INVO', '')) || 0,
+          issue_date: localInvoice.issueDate,
+          due_date: localInvoice.dueDate || localInvoice.issueDate,
+          warehouse_id: parseInt(localInvoice.warehouseId || '0') || 0,
+          category_id: 0,
+          customer_id: parseInt(localInvoice.customerId || '0') || 0,
+          customer_name: localInvoice.customerName,
+          contact_number: null,
+          address: null,
+          delivery_status: 'Pending',
+          current_balance: '0',
+          discount_apply: 0,
+          ref_number: null,
+          status: localInvoice.status === 'Paid' ? 1 : localInvoice.status === 'Partially Paid' ? 2 : 3,
+          sale_type: 'single_warehouse',
+        },
+        items: items.map(item => ({
+          id: item.id ? parseInt(item.id) : 0,
+          quantity: item.quantity,
+          price: item.price.toString(),
+          discount: 0,
+          discount_percentage: '0.00',
+          tax: null,
+          description: item.description || '',
+          subtotal: parseInt(item.price.toString()) * item.quantity,
+        })),
+        payments: payments.map(payment => ({
+          id: payment.id ? parseInt(payment.id) : 0,
+          date: payment.date,
+          amount: payment.amount.toString(),
+          account_id: payment.accountId || 0,
+          payment_method: payment.paymentMethod || 1,
+          reference: payment.reference || '',
+          description: '',
+        })),
+        totals: {
+          sub_total: parseInt(localInvoice.subTotal) || 0,
+          discount: parseInt(localInvoice.discountTotal) || 0,
+          tax: parseInt(localInvoice.taxTotal) || 0,
+          total: parseInt(localInvoice.grandTotal) || 0,
+          paid: parseInt(localInvoice.grandTotal) - parseInt(localInvoice.dueAmount),
+          due: parseInt(localInvoice.dueAmount) || 0,
+        },
+      };
+    } catch (error: any) {
+      console.error('[invoiceService] Error fetching invoice detail:', error);
+      return null;
     }
   },
 };

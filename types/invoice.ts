@@ -30,6 +30,64 @@ export interface InvoiceApi {
   } | null;
 }
 
+// Invoice Detail API Types (for /invoice/:id/edit endpoint)
+export interface InvoiceDetailItem {
+  id: number;
+  quantity: number;
+  price: string;
+  discount: number;
+  discount_percentage: string;
+  tax: string | null;
+  description: string;
+  subtotal: number;
+}
+
+export interface InvoicePayment {
+  id: number;
+  date: string;
+  amount: string;
+  account_id: number;
+  payment_method: number;
+  reference: string;
+  description: string;
+}
+
+export interface InvoiceTotals {
+  sub_total: number;
+  discount: number;
+  tax: number;
+  total: number;
+  paid: number;
+  due: number;
+}
+
+export interface InvoiceDetailApi {
+  id: number;
+  invoice_number: number;
+  issue_date: string;
+  due_date: string;
+  warehouse_id: number;
+  category_id: number;
+  customer_id: number;
+  customer_name: string;
+  contact_number: string | null;
+  address: string | null;
+  delivery_status: string;
+  current_balance: string;
+  discount_apply: number;
+  ref_number: string | null;
+  status: number; // 1=Paid, 2=Partially Paid, 3=Unpaid
+  sale_type: string;
+}
+
+export interface InvoiceDetailApiResponse {
+  success: boolean;
+  invoice: InvoiceDetailApi;
+  items: InvoiceDetailItem[];
+  payments: InvoicePayment[];
+  totals: InvoiceTotals;
+}
+
 // App Types
 export interface Invoice {
   id: string;

@@ -1,3 +1,4 @@
+import { InvoiceDetailModal } from '@/components/InvoiceDetailModal';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors } from '@/constants/theme';
@@ -55,6 +56,11 @@ export default function InvoiceScreen() {
   const [showShopModal, setShowShopModal] = useState(false);
   const [searchText, setSearchText] = useState('');
   const searchInputRef = useRef<TextInput | null>(null);
+
+  // Detail Modal state
+  const [detailModalVisible, setDetailModalVisible] = useState(false);
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
+  const [detailModalMode, setDetailModalMode] = useState<'view' | 'edit'>('view');
 
   // Load invoices from service with pagination
   const loadInvoices = useCallback(async (page: number = 1, append: boolean = false) => {
@@ -193,8 +199,27 @@ export default function InvoiceScreen() {
       }
     };
 
+    const handleViewClick = () => {
+      // Use serverId if available (for API calls), otherwise use id
+      const invoiceId = item.serverId || item.id;
+      console.log('[Invoice List] View clicked - ID:', invoiceId, 'serverId:', item.serverId, 'id:', item.id);
+      setSelectedInvoiceId(invoiceId);
+      setDetailModalMode('view');
+      setDetailModalVisible(true);
+    };
+
+    const handleEditClick = () => {
+      const invoiceId = item.serverId || item.id;
+      console.log('[Invoice List] Edit clicked - ID:', invoiceId);
+      // Navigate to edit page instead of opening modal
+      router.push({
+        pathname: '/(tabs)/invoice/edit/[id]',
+        params: { id: invoiceId }
+      });
+    };
+
     return (
-  <TouchableOpacity activeOpacity={0.9} style={stylesLocal.rowWrapper} onPress={() => router.push({ pathname: '/(tabs)/invoice/[id]', params: { id: item.id } })} accessibilityRole="button">
+  <View style={stylesLocal.rowWrapper}>
         <ThemedView style={[stylesLocal.card, { width: '100%' }]}>
           <View style={stylesLocal.left}>
             <TouchableOpacity style={stylesLocal.idChip} activeOpacity={0.85}>
@@ -219,13 +244,13 @@ export default function InvoiceScreen() {
               <TouchableOpacity
                 style={[stylesLocal.iconBtn, { backgroundColor: '#f9b233' }]}
                 accessibilityLabel={`View ${item.invoiceNo}`}
-                onPress={() => router.push({ pathname: '/(tabs)/invoice/[id]', params: { id: item.id } })}
+                onPress={handleViewClick}
               >
                 <MaterialIcons name="visibility" size={resp.fontSize(14)} color="#fff" />
               </TouchableOpacity>
               <TouchableOpacity
                 style={[stylesLocal.iconBtn, { backgroundColor: '#16a085' }]}
-                onPress={() => router.push({ pathname: '/(tabs)/invoice/edit/[id]', params: { id: item.id } })}
+                onPress={handleEditClick}
                 accessibilityLabel={`Edit ${item.invoiceNo}`}
               >
                 <MaterialIcons name="edit" size={resp.fontSize(14)} color="#fff" />
@@ -240,7 +265,7 @@ export default function InvoiceScreen() {
             </View>
           </View>
         </ThemedView>
-      </TouchableOpacity>
+      </View>
     );
   }
 
@@ -431,6 +456,23 @@ export default function InvoiceScreen() {
         <DropdownModal visible={showStatusModal} title="Select status" options={statusOptions} onClose={() => setShowStatusModal(false)} onSelect={(v) => setSelectedStatus(v as InvoiceItem['status'])} />
         <DropdownModal visible={showShopModal} title="Select shop" options={shopOptions} onClose={() => setShowShopModal(false)} onSelect={(v) => setSelectedShop(v)} />
         <CalendarModal visible={showDateModal} onClose={() => setShowDateModal(false)} onSelect={(d) => setSelectedDate(d)} />
+
+        {/* Invoice Detail Modal */}
+        {selectedInvoiceId && (
+          <InvoiceDetailModal
+            visible={detailModalVisible}
+            invoiceId={selectedInvoiceId}
+            mode={detailModalMode}
+            onClose={() => setDetailModalVisible(false)}
+            onEdit={() => {
+              setDetailModalVisible(false);
+              // Navigate to edit page after short delay
+              setTimeout(() => {
+                router.push({ pathname: '/(tabs)/invoice/edit/[id]', params: { id: selectedInvoiceId } });
+              }, 300);
+            }}
+          />
+        )}
 
         <View style={stylesLocal.controls}>
           <TextInput

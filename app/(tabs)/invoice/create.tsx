@@ -41,6 +41,7 @@ type ProductItem = {
   tax: string;
   description: string;
   price: string;
+  purchase_price?: string; // Store purchase price for validation
 };
 
 type PaymentDetail = {
@@ -106,6 +107,7 @@ export default function CreateInvoice() {
   const [dateModalType, setDateModalType] = useState<'issue' | 'due'>('issue');
   const [showAccountModal, setShowAccountModal] = useState(false);
   const [selectedPaymentIndex, setSelectedPaymentIndex] = useState(-1);
+  const [editingProductId, setEditingProductId] = useState<string | null>(null);
 
   // Temporary product/payment for modal
   const [tempProduct, setTempProduct] = useState<ProductItem>({
@@ -339,6 +341,7 @@ export default function CreateInvoice() {
         rate: product.sale_price || '0',
         description: product.description || '',
         quantity: '1', // Default quantity to 1
+        purchase_price: product.purchase_price || '0', // Store purchase price for validation
       };
 
       // Calculate price with the new rate
@@ -366,6 +369,7 @@ export default function CreateInvoice() {
       tax: '0',
       description: '',
       price: '0',
+      purchase_price: '0',
     });
     setProductSearchQuery('');
     setShowProductSuggestions(false);
@@ -379,10 +383,16 @@ export default function CreateInvoice() {
       return;
     }
 
-    console.log('[CreateInvoice] Adding product:', tempProduct);
+    console.log('[CreateInvoice] Adding/Editing product:', tempProduct);
 
-    // Add the product to the list
-    setProducts(prev => [...prev, { ...tempProduct, id: tempProduct.id || Date.now().toString() }]);
+    if (editingProductId) {
+      // Update existing product
+      setProducts(prev => prev.map(p => p.id === editingProductId ? tempProduct : p));
+      setEditingProductId(null);
+    } else {
+      // Add new product
+      setProducts(prev => [...prev, { ...tempProduct, id: tempProduct.id || Date.now().toString() }]);
+    }
 
     // Close bottom sheet and reset temp product
     addProductBottomSheetRef.current?.close();
@@ -396,12 +406,30 @@ export default function CreateInvoice() {
       tax: '0',
       description: '',
       price: '0',
+      purchase_price: '0',
     });
-  }, [tempProduct]);
+  }, [tempProduct, editingProductId]);
 
   const updateTempProduct = useCallback((field: keyof ProductItem, value: string) => {
     setTempProduct(prev => {
-      const updated = { ...prev, [field]: value };
+      let updated = { ...prev, [field]: value };
+
+      // Validate rate against purchase price
+      if (field === 'rate') {
+        const rateValue = parseFloat(value) || 0;
+        const purchasePrice = parseFloat(updated.purchase_price || '0') || 0;
+        
+        // Only prevent rate less than purchase price
+        if (purchasePrice > 0 && rateValue > 0 && rateValue < purchasePrice) {
+          Alert.alert(
+            'Invalid Rate',
+            `Rate cannot be less than purchase price `,
+            [{ text: 'OK' }]
+          );
+          // Reset to purchase price
+          updated.rate = purchasePrice.toString();
+        }
+      }
 
       // Recalculate price when quantity or rate changes
       if (field === 'quantity' || field === 'rate' || field === 'discount') {
@@ -445,6 +473,14 @@ export default function CreateInvoice() {
       }
       return prevProducts;
     });
+  }, []);
+
+  const editProduct = useCallback((product: ProductItem) => {
+    // Set the product to edit
+    setTempProduct(product);
+    setEditingProductId(product.id);
+    // Open bottom sheet
+    addProductBottomSheetRef.current?.snapToIndex(0);
   }, []);
 
   const addPayment = useCallback(() => {
@@ -670,12 +706,14 @@ export default function CreateInvoice() {
     index,
     onUpdate,
     onRemove,
+    onEdit,
     canRemove
   }: {
     product: ProductItem;
     index: number;
     onUpdate: (id: string, field: keyof ProductItem, value: string) => void;
     onRemove: (id: string) => void;
+    onEdit: (product: ProductItem) => void;
     canRemove: boolean;
   }) => {
     return (
@@ -697,23 +735,29 @@ export default function CreateInvoice() {
           placeholderTextColor={icon}
           keyboardType="numeric"
         />
-        <TextInput
+        {/* <TextInput
           style={[stylesLocal.tableCell, stylesLocal.tableCellSmall]}
           value={product.discount}
           onChangeText={(value) => onUpdate(product.id, 'discount', value)}
           placeholder="Disc%"
           placeholderTextColor={icon}
           keyboardType="numeric"
-        />
+        /> */}
         <Text style={[stylesLocal.tableCell, stylesLocal.tableCellPrice]}>{product.price}</Text>
-        {canRemove && (
+        <View style={stylesLocal.actionCell}>
+          <TouchableOpacity
+            onPress={() => onEdit(product)}
+            style={stylesLocal.actionIcon}
+          >
+            <MaterialIcons name="edit" size={resp.fontSize(18)} color="#3b82f6" />
+          </TouchableOpacity>
           <TouchableOpacity
             onPress={() => onRemove(product.id)}
-            style={stylesLocal.tableDeleteBtn}
+            style={stylesLocal.actionIcon}
           >
             <MaterialIcons name="delete-outline" size={resp.fontSize(18)} color="#ef4444" />
           </TouchableOpacity>
-        )}
+        </View>
       </View>
     );
   });
@@ -785,14 +829,12 @@ export default function CreateInvoice() {
           placeholder="Reference"
           placeholderTextColor={icon}
         />
-        {canRemove && (
-          <TouchableOpacity
-            onPress={() => onRemove(payment.id)}
-            style={stylesLocal.tableDeleteBtn}
-          >
-            <MaterialIcons name="delete-outline" size={resp.fontSize(18)} color="#ef4444" />
-          </TouchableOpacity>
-        )}
+        <TouchableOpacity
+          onPress={() => onRemove(payment.id)}
+          style={stylesLocal.tableDeleteBtn}
+        >
+          <MaterialIcons name="delete-outline" size={resp.fontSize(18)} color="#ef4444" />
+        </TouchableOpacity>
       </View>
     );
   });
@@ -1269,7 +1311,7 @@ export default function CreateInvoice() {
             {isOnline && (
               <View style={stylesLocal.section}>
                 <View style={stylesLocal.row}>
-                  <View style={stylesLocal.halfWidth}>
+                  {/* <View style={stylesLocal.halfWidth}>
                     <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
                       Invoice Number {isLoadingInvoiceNumber && '(Loading...)'}
                     </ThemedText>
@@ -1284,7 +1326,7 @@ export default function CreateInvoice() {
                       placeholderTextColor={icon}
                       editable={!invoiceNumberDisabled && !isLoadingInvoiceNumber}
                     />
-                  </View>
+                  </View> */}
                   <View style={stylesLocal.halfWidth}>
                     <ThemedText type="defaultSemiBold" style={stylesLocal.sectionTitle}>
                       Ref Number
@@ -1337,7 +1379,7 @@ export default function CreateInvoice() {
                       <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellSmall]}>Qty</Text>
                       <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellMedium]}>Rate</Text>
                       <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellPrice]}>Amount</Text>
-                      <View style={{ width: resp.horizontalScale(32) }} />
+                      <Text style={[stylesLocal.tableHeaderCell, { flex: 0.8, textAlign: 'center' }]}>Action</Text>
                     </View>
 
                     {/* Table Rows */}
@@ -1348,6 +1390,7 @@ export default function CreateInvoice() {
                         index={index}
                         onUpdate={updateProduct}
                         onRemove={removeProduct}
+                        onEdit={editProduct}
                         canRemove={products.length > 1}
                       />
                     ))}
@@ -1561,10 +1604,18 @@ export default function CreateInvoice() {
           handleIndicatorStyle={{ backgroundColor: icon }}
         >
           <View style={stylesLocal.bottomSheetHeader}>
-            <TouchableOpacity onPress={() => addProductBottomSheetRef.current?.close()} style={stylesLocal.modalCloseBtn}>
+            <TouchableOpacity
+              onPress={() => {
+                addProductBottomSheetRef.current?.close();
+                setEditingProductId(null);
+              }}
+              style={stylesLocal.modalCloseBtn}
+            >
               <MaterialIcons name="close" size={resp.fontSize(24)} color={icon} />
             </TouchableOpacity>
-            <Text style={stylesLocal.bottomSheetTitle}>Add Product/Service</Text>
+            <Text style={stylesLocal.bottomSheetTitle}>
+              {editingProductId ? 'Edit Product/Service' : 'Add Product/Service'}
+            </Text>
             <View style={{ width: resp.horizontalScale(40) }} />
           </View>
 
@@ -1672,7 +1723,10 @@ export default function CreateInvoice() {
           <View style={stylesLocal.bottomSheetFooter}>
             <TouchableOpacity
               style={[stylesLocal.modalButton, stylesLocal.modalCancelButton]}
-              onPress={() => addProductBottomSheetRef.current?.close()}
+              onPress={() => {
+                addProductBottomSheetRef.current?.close();
+                setEditingProductId(null);
+              }}
             >
               <Text style={stylesLocal.modalCancelButtonText}>Cancel</Text>
             </TouchableOpacity>
@@ -1680,7 +1734,9 @@ export default function CreateInvoice() {
               style={[stylesLocal.modalButton, stylesLocal.modalAddButton]}
               onPress={confirmAddProduct}
             >
-              <Text style={stylesLocal.modalAddButtonText}>Add Product</Text>
+              <Text style={stylesLocal.modalAddButtonText}>
+                {editingProductId ? 'Update Product' : 'Add Product'}
+              </Text>
             </TouchableOpacity>
           </View>
         </BottomSheet>
@@ -2460,6 +2516,21 @@ const createStyles = (resp: ReturnType<typeof useResponsive>, theme: { bg: strin
       justifyContent: 'center',
       alignItems: 'center',
       marginLeft: resp.horizontalScale(4),
+    },
+    actionCell: {
+      flexDirection: 'row',
+      justifyContent: 'center',
+      alignItems: 'center',
+      gap: resp.horizontalScale(8),
+      flex: 0.8,
+    },
+    actionIcon: {
+      width: resp.horizontalScale(36),
+      height: resp.horizontalScale(36),
+      borderRadius: resp.horizontalScale(18),
+      justifyContent: 'center',
+      alignItems: 'center',
+      backgroundColor: theme.bg === Colors.light.background ? '#f1f5f9' : '#334155',
     },
     paymentTableRow: {
       flexDirection: 'row',

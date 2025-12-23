@@ -2,10 +2,15 @@ import { ThemedView } from '@/components/themed-view';
 import { Colors } from '@/constants/theme';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import useResponsive from '@/hooks/useResponsive';
+import { invoiceService } from '@/services/invoiceService';
+import { categoryService, productService } from '@/services/productService';
+import { warehouseService } from '@/services/warehouseService';
 import { MaterialIcons } from '@expo/vector-icons';
+import BottomSheet, { BottomSheetBackdrop, BottomSheetScrollView } from '@gorhom/bottom-sheet';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, FlatList, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, Alert, FlatList, Keyboard, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 type ProductItem = {
@@ -18,6 +23,7 @@ type ProductItem = {
   tax: string;
   description: string;
   price: string;
+  purchase_price?: string; // Store purchase price for validation
 };
 
 type PaymentDetail = {
@@ -28,37 +34,6 @@ type PaymentDetail = {
   reference: string;
 };
 
-const SAMPLE_CUSTOMERS = [
-  'Yasir Foam Center',
-  'Master Display Timber [Zubair]',
-  'Acme Supplies',
-  'Al-Noor Electronics',
-  'Bright Furniture Works',
-  'TechZone Computers',
-  'Smart Home Solutions',
-  'City Light Traders',
-  'Metro Construction Co.',
-  'Premier Paints & Coatings',
-];
-
-const SAMPLE_CATEGORIES = [
-  'Foam Products',
-  'Timber & Wood',
-  'Electronics',
-  'Furniture',
-  'Construction Materials',
-  'Hardware',
-  'Paints & Coatings',
-];
-
-const SAMPLE_SHOPS = [
-  'Main Shop',
-  'Outlet A',
-  'Outlet B',
-  'MASHAALLAH FOAM ABDALI ROAD',
-  'Anas Foam House',
-];
-
 const SAMPLE_ACCOUNTS = [
   'Cash Account',
   'Bank Account - HBL',
@@ -66,132 +41,30 @@ const SAMPLE_ACCOUNTS = [
   'Petty Cash',
 ];
 
-// Sample invoice data for editing
-const SAMPLE_INVOICE_DATA = {
-  '1': {
-    customerType: 'customer' as 'customer' | 'walk-in' | 'dealers',
-    selectedCustomer: 'Yasir Foam Center',
-    walkInCustomerName: '',
-    walkInContactNumber: '',
-    walkInAddress: '',
-    issueDate: new Date('2025-09-21'),
-    dueDate: new Date('2025-09-21'),
-    deliveryStatus: 'Pending',
-    invoiceNumber: '#INVO00003',
-    referenceNumber: 'REF-001',
-    selectedCategory: 'Foam Products',
-    masterDiscount: '5',
-    stockType: 'send-now' as 'send-now' | 'multi-ship',
-    products: [
-      {
-        id: '1',
-        product: 'مولٹی فوم',
-        shop: 'Main Shop',
-        quantity: '4',
-        rate: '423.00',
-        discount: '5',
-        tax: '0',
-        description: 'فوم کی اقسام اور فوم کمپنی',
-        price: '1,607.40',
-      },
-        {
-        id: '1',
-        product: 'مولٹی فوم',
-        shop: 'Main Shop 2',
-        quantity: '4',
-        rate: '423.00',
-        discount: '5',
-        tax: '0',
-        description: 'فوم کی اقسام اور فوم کمپنی',
-        price: '1,607.40',
-      },
-    ],
-    paymentDetails: [
-      {
-        id: '1',
-        amount: '1000',
-        account: 'Cash Account',
-        date: new Date().toLocaleDateString(),
-        reference: 'PAY-001',
-      },
-    ],
-  },
-  '2': {
-    customerType: 'customer' as 'customer' | 'walk-in' | 'dealers',
-    selectedCustomer: 'Master Display Timber [Zubair]',
-    walkInCustomerName: '',
-    walkInContactNumber: '',
-    walkInAddress: '',
-    issueDate: new Date('2025-09-21'),
-    dueDate: new Date('2025-09-21'),
-    deliveryStatus: 'Processing',
-    invoiceNumber: '#INVO00004',
-    referenceNumber: 'REF-002',
-    selectedCategory: 'Timber & Wood',
-    masterDiscount: '10',
-    stockType: 'multi-ship' as 'send-now' | 'multi-ship',
-    products: [
-      {
-        id: '1',
-        product: 'Oak Wood Panels',
-        shop: 'Outlet A',
-        quantity: '10',
-        rate: '2500.00',
-        discount: '10',
-        tax: '5',
-        description: 'Premium oak wood panels for furniture',
-        price: '23,625.00',
-      },
-    ],
-    paymentDetails: [
-      {
-        id: '1',
-        amount: '15000',
-        account: 'Bank Account - HBL',
-        date: new Date().toLocaleDateString(),
-        reference: 'PAY-002',
-      },
-    ],
-  },
-  '3': {
-    customerType: 'walk-in' as 'customer' | 'walk-in' | 'dealers',
-    selectedCustomer: null,
-    walkInCustomerName: 'Ahmed Khan',
-    walkInContactNumber: '+92-300-1234567',
-    walkInAddress: 'Street 15, Block A, City Plaza',
-    issueDate: new Date('2025-10-01'),
-    dueDate: new Date('2025-10-10'),
-    deliveryStatus: 'Pending',
-    invoiceNumber: '#INVO00005',
-    referenceNumber: 'REF-003',
-    selectedCategory: 'Electronics',
-    masterDiscount: '0',
-    stockType: 'send-now' as 'send-now' | 'multi-ship',
-    products: [
-      {
-        id: '1',
-        product: 'LED TV 55 inch',
-        shop: 'Main Shop',
-        quantity: '1',
-        rate: '12000.00',
-        discount: '0',
-        tax: '0',
-        description: 'Samsung 55 inch Smart LED TV',
-        price: '12,000.00',
-      },
-    ],
-    paymentDetails: [
-      {
-        id: '1',
-        amount: '0',
-        account: '',
-        date: new Date().toLocaleDateString(),
-        reference: '',
-      },
-    ],
-  },
-  // Add more sample data for other invoices as needed
+// Warehouse mapping
+const WAREHOUSE_MAP: { [key: number]: string } = {
+  1: 'Main Warehouse',
+  2: 'Outlet A',
+  3: 'Outlet B',
+  4: 'MASHAALLAH FOAM ABDALI ROAD',
+  5: 'Anas Foam House',
 };
+
+// Category mapping
+const CATEGORY_MAP: { [key: number]: string } = {
+  1: 'Foam Products',
+  2: 'Timber & Wood',
+  3: 'Electronics',
+  4: 'Furniture',
+  5: 'Construction Materials',
+  6: 'Hardware',
+  7: 'Paints & Coatings',
+  8: 'Office Supplies',
+  9: 'General Products',
+};
+
+// Sample invoice data for editing
+// REMOVED: Using dynamic data from API instead
 
 export default function EditInvoice() {
   const resp = useResponsive();
@@ -207,11 +80,16 @@ export default function EditInvoice() {
   const productsListRef = useRef<FlatList>(null);
   const paymentsListRef = useRef<FlatList>(null);
 
+  // Refs for bottom sheets
+  const addProductBottomSheetRef = useRef<BottomSheet>(null);
+  const addPaymentBottomSheetRef = useRef<BottomSheet>(null);
+
   const stylesLocal = createStyles(resp, { bg, text, tint, icon });
 
   // Form state
   const [customerType, setCustomerType] = useState<'customer' | 'walk-in' | 'dealers'>('customer');
   const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null);
+  const [customerId, setCustomerId] = useState<number | null>(null);
   const [walkInCustomerName, setWalkInCustomerName] = useState('');
   const [walkInContactNumber, setWalkInContactNumber] = useState('');
   const [walkInAddress, setWalkInAddress] = useState('');
@@ -221,6 +99,9 @@ export default function EditInvoice() {
   const [invoiceNumber, setInvoiceNumber] = useState('');
   const [referenceNumber, setReferenceNumber] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+  const [categoryId, setCategoryId] = useState<number | null>(null);
+  const [selectedWarehouse, setSelectedWarehouse] = useState<string | null>(null);
+  const [warehouseId, setWarehouseId] = useState<number | null>(null);
   const [masterDiscount, setMasterDiscount] = useState('');
   const [stockType, setStockType] = useState<'send-now' | 'multi-ship'>('send-now');
 
@@ -244,37 +125,286 @@ export default function EditInvoice() {
     { id: '1', amount: '0', account: '', date: new Date().toLocaleDateString(), reference: '' },
   ]);
 
+  // Temporary payment for modal
+  const [tempPayment, setTempPayment] = useState<PaymentDetail>({
+    id: '',
+    amount: '0',
+    account: '',
+    date: new Date().toLocaleDateString(),
+    reference: '',
+  });
+
+  // Payment snap points for bottom sheet
+  const paymentSnapPoints = useMemo(() => ['90%'], []);
+
+  // Payment modal mode: 'add' or 'edit'
+  const [paymentModalMode, setPaymentModalMode] = useState<'add' | 'edit'>('add');
+
+  // Temporary product for modal
+  const [tempProduct, setTempProduct] = useState<ProductItem>({
+    id: '',
+    product: '',
+    shop: '',
+    quantity: '1',
+    rate: '0',
+    discount: '0',
+    tax: '0',
+    description: '',
+    price: '0',
+    purchase_price: '0',
+  });
+
+  // Product snap points for bottom sheet
+  const productSnapPoints = useMemo(() => ['90%'], []);
+
+  // Product modal mode: 'add' or 'edit'
+  const [productModalMode, setProductModalMode] = useState<'add' | 'edit'>('add');
+
+  // Product search state
+  const [productSearchQuery, setProductSearchQuery] = useState('');
+  const [productSuggestions, setProductSuggestions] = useState<any[]>([]);
+  const [showProductSuggestions, setShowProductSuggestions] = useState(false);
+  const [isSearchingProducts, setIsSearchingProducts] = useState(false);
+
   // Modal states
   const [showCustomerModal, setShowCustomerModal] = useState(false);
   const [showCategoryModal, setShowCategoryModal] = useState(false);
+  const [showWarehouseModal, setShowWarehouseModal] = useState(false);
   const [showDeliveryModal, setShowDeliveryModal] = useState(false);
   const [showDateModal, setShowDateModal] = useState(false);
   const [dateModalType, setDateModalType] = useState<'issue' | 'due'>('issue');
   const [showAccountModal, setShowAccountModal] = useState(false);
   const [selectedPaymentIndex, setSelectedPaymentIndex] = useState(0);
 
+  // Loading state for update
+  const [isUpdating, setIsUpdating] = useState(false);
+
+  // Loading state
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  // Dynamic dropdown data
+  const [customers, setCustomers] = useState<Array<{ id: number; name: string }>>([]);
+  const [categories, setCategories] = useState<Array<{ id: number; name: string }>>([]);
+  const [warehouses, setWarehouses] = useState<Array<{ id: number; name: string }>>([]);
+  const [deliveryStatuses] = useState(['Pending', 'Processing', 'Shipped', 'Out for delivery', 'Delivered']);
+
   // Load invoice data when component mounts
   useEffect(() => {
-    if (id && SAMPLE_INVOICE_DATA[id as keyof typeof SAMPLE_INVOICE_DATA]) {
-      const invoiceData = SAMPLE_INVOICE_DATA[id as keyof typeof SAMPLE_INVOICE_DATA];
-      
-      setCustomerType(invoiceData.customerType);
-      setSelectedCustomer(invoiceData.selectedCustomer);
-      setWalkInCustomerName(invoiceData.walkInCustomerName);
-      setWalkInContactNumber(invoiceData.walkInContactNumber);
-      setWalkInAddress(invoiceData.walkInAddress);
-      setIssueDate(invoiceData.issueDate);
-      setDueDate(invoiceData.dueDate);
-      setDeliveryStatus(invoiceData.deliveryStatus);
-      setInvoiceNumber(invoiceData.invoiceNumber);
-      setReferenceNumber(invoiceData.referenceNumber);
-      setSelectedCategory(invoiceData.selectedCategory);
-      setMasterDiscount(invoiceData.masterDiscount);
-      setStockType(invoiceData.stockType);
-      setProducts(invoiceData.products);
-      setPaymentDetails(invoiceData.paymentDetails);
+    if (id) {
+      loadInvoiceData(id);
+      loadWarehouses();
+      loadCategories();
     }
   }, [id]);
+
+  // Function to load warehouses dynamically
+  const loadWarehouses = async () => {
+    try {
+      console.log('[EditInvoice] Loading warehouses...');
+      const warehouseList = await warehouseService.getLocalWarehouses();
+      
+      if (warehouseList && warehouseList.length > 0) {
+        console.log('[EditInvoice] Loaded warehouses:', warehouseList);
+        const formattedWarehouses = warehouseList.map((wh: any) => ({
+          id: wh.id,
+          name: wh.name,
+        }));
+        setWarehouses(formattedWarehouses);
+      } else {
+        console.log('[EditInvoice] No warehouses found in local DB, syncing from API...');
+        // Try to sync from API
+        const syncResult = await warehouseService.syncWarehouses();
+        if (syncResult.success) {
+          const updatedList = await warehouseService.getLocalWarehouses();
+          const formattedWarehouses = updatedList.map((wh: any) => ({
+            id: wh.id,
+            name: wh.name,
+          }));
+          setWarehouses(formattedWarehouses);
+          console.log('[EditInvoice] Warehouses synced:', formattedWarehouses);
+        }
+      }
+    } catch (error) {
+      console.error('[EditInvoice] Error loading warehouses:', error);
+    }
+  };
+
+  // Function to load categories dynamically
+  const loadCategories = async () => {
+    try {
+      console.log('[EditInvoice] Loading categories...');
+      const categoryList = await categoryService.getLocalCategories();
+      
+      if (categoryList && categoryList.length > 0) {
+        console.log('[EditInvoice] Loaded categories:', categoryList);
+        const formattedCategories = categoryList.map((cat: any) => ({
+          id: cat.id,
+          name: cat.name,
+        }));
+        setCategories(formattedCategories);
+      } else {
+        console.log('[EditInvoice] No categories found in local DB, syncing from API...');
+        // Try to sync from API
+        const syncResult = await categoryService.syncCategories();
+        if (syncResult.success) {
+          const updatedList = await categoryService.getLocalCategories();
+          const formattedCategories = updatedList.map((cat: any) => ({
+            id: cat.id,
+            name: cat.name,
+          }));
+          setCategories(formattedCategories);
+          console.log('[EditInvoice] Categories synced:', formattedCategories);
+        }
+      }
+    } catch (error) {
+      console.error('[EditInvoice] Error loading categories:', error);
+    }
+  };
+
+  // Search products with debouncing
+  useEffect(() => {
+    const searchProducts = async () => {
+      if (!productSearchQuery.trim()) {
+        setProductSuggestions([]);
+        setShowProductSuggestions(false);
+        return;
+      }
+
+      setIsSearchingProducts(true);
+      try {
+        const results = await productService.searchProducts(productSearchQuery);
+        setProductSuggestions(results);
+        setShowProductSuggestions(results.length > 0);
+      } catch (error) {
+        console.error('Error searching products:', error);
+        setProductSuggestions([]);
+      } finally {
+        setIsSearchingProducts(false);
+      }
+    };
+
+    // Debounce search
+    const timer = setTimeout(searchProducts, 300);
+    return () => clearTimeout(timer);
+  }, [productSearchQuery]);
+
+  const selectProductFromSuggestions = useCallback((product: any) => {
+    console.log('[EditInvoice] Product selected:', product);
+
+    // Clear search query first
+    setProductSearchQuery('');
+    setShowProductSuggestions(false);
+
+    // Auto-fill product details
+    setTempProduct(prev => {
+      const updated = {
+        ...prev,
+        id: product.id.toString(),
+        product: product.label,
+        rate: product.sale_price || '0',
+        description: product.description || '',
+        quantity: '1',
+        purchase_price: product.purchase_price || '0', // Store purchase price for validation
+      };
+
+      // Calculate price with the new rate
+      const qty = parseFloat(updated.quantity) || 0;
+      const rate = parseFloat(updated.rate) || 0;
+      const discount = parseFloat(updated.discount) || 0;
+      const subtotal = qty * rate;
+      const discountAmount = (subtotal * discount) / 100;
+      updated.price = (subtotal - discountAmount).toFixed(2);
+
+      console.log('[EditInvoice] Product auto-filled:', updated);
+      return updated;
+    });
+  }, []);
+
+  // Function to load invoice data from API
+  const loadInvoiceData = async (invoiceId: string) => {
+    try {
+      setLoading(true);
+      setError(null);
+      console.log('[EditInvoice] Loading invoice data for ID:', invoiceId);
+      
+      const data = await invoiceService.getInvoiceDetail(invoiceId);
+      
+      if (data) {
+        const { invoice, items, payments, totals } = data;
+        console.log('[EditInvoice] Loaded invoice data:', invoice);
+        
+        // Populate form fields with API data
+        setInvoiceNumber(`#INVO${String(invoice.invoice_number).padStart(5, '0')}`);
+        setSelectedCustomer(invoice.customer_name);
+        setCustomerId(invoice.customer_id || null);
+        setWalkInCustomerName('');
+        setWalkInContactNumber(invoice.contact_number || '');
+        setWalkInAddress(invoice.address || '');
+        setIssueDate(new Date(invoice.issue_date));
+        setDueDate(new Date(invoice.due_date));
+        setDeliveryStatus(invoice.delivery_status);
+        setReferenceNumber(invoice.ref_number || '');
+        setMasterDiscount(invoice.discount_apply?.toString() || '0');
+        
+        // Set category from mapping
+        const categoryId = invoice.category_id || null;
+        setCategoryId(categoryId);
+        if (categoryId) {
+          setSelectedCategory(CATEGORY_MAP[categoryId] || null);
+        }
+        
+        // Set warehouse from mapping
+        const warehouseId = invoice.warehouse_id || null;
+        setWarehouseId(warehouseId);
+        if (warehouseId) {
+          setSelectedWarehouse(WAREHOUSE_MAP[warehouseId] || null);
+        }
+        setCustomerType('customer');
+        setStockType('send-now');
+        
+        // Populate products
+        const productItems: ProductItem[] = items.map((item, index) => ({
+          id: item.id.toString(),
+          product: item.description,
+          shop: 'Main Shop',
+          quantity: item.quantity.toString(),
+          rate: item.price,
+          discount: item.discount_percentage || '0',
+          tax: item.tax?.toString() || '0',
+          description: item.description,
+          price: item.subtotal.toString(),
+          purchase_price: (item as any).cost_price || '0', // Store purchase price for validation
+        }));
+        
+        if (productItems.length > 0) {
+          setProducts(productItems);
+        }
+        
+        // Populate payment details
+        const paymentItems: PaymentDetail[] = payments.map((payment) => ({
+          id: payment.id.toString(),
+          amount: payment.amount,
+          account: 'Cash Account',
+          date: payment.date !== '0000-00-00' ? payment.date : new Date().toLocaleDateString(),
+          reference: payment.reference || '',
+        }));
+        
+        if (paymentItems.length > 0) {
+          setPaymentDetails(paymentItems);
+        }
+        
+        console.log('[EditInvoice] Invoice data loaded successfully');
+      } else {
+        setError('Invoice not found');
+      }
+    } catch (err: any) {
+      console.error('[EditInvoice] Error loading invoice:', err);
+      setError(err.message || 'Failed to load invoice');
+    } finally {
+      setLoading(false);
+    }
+  };
 
   // Calculate totals with memoization
   const calculateTotals = useCallback(() => {
@@ -306,7 +436,8 @@ export default function EditInvoice() {
   };
 
   const addProduct = useCallback(() => {
-    const newProduct: ProductItem = {
+    // Reset temp product and show bottom sheet
+    setTempProduct({
       id: Date.now().toString(),
       product: '',
       shop: '',
@@ -316,16 +447,108 @@ export default function EditInvoice() {
       tax: '0',
       description: '',
       price: '0',
-    };
-    setProducts(prev => {
-      const newProducts = [...prev, newProduct];
+      purchase_price: '0',
+    });
+    setProductSearchQuery('');
+    setShowProductSuggestions(false);
+    setProductModalMode('add');
+    addProductBottomSheetRef.current?.snapToIndex(0);
+  }, []);
+
+  const editProduct = useCallback((product: ProductItem) => {
+    // Load product into temp and show bottom sheet
+    setTempProduct(product);
+    setProductModalMode('edit');
+    addProductBottomSheetRef.current?.snapToIndex(0);
+  }, []);
+
+  const confirmAddProduct = useCallback(() => {
+    // Validate required fields
+    if (!tempProduct.description.trim()) {
+      Alert.alert('Error', 'Please enter product description');
+      return;
+    }
+
+    if (!tempProduct.quantity || parseFloat(tempProduct.quantity) <= 0) {
+      Alert.alert('Error', 'Please enter valid quantity');
+      return;
+    }
+
+    if (!tempProduct.rate || parseFloat(tempProduct.rate) <= 0) {
+      Alert.alert('Error', 'Please enter valid rate/price');
+      return;
+    }
+
+    if (productModalMode === 'add') {
+      // Add the product to the list
+      setProducts(prev => [...prev, { ...tempProduct, id: Date.now().toString() }]);
+    } else {
+      // Update existing product
+      setProducts(prevProducts => prevProducts.map(product =>
+        product.id === tempProduct.id ? tempProduct : product
+      ));
+    }
+
+    // Reset search state
+    setProductSearchQuery('');
+    setShowProductSuggestions(false);
+
+    // Dismiss keyboard and close bottom sheet
+    Keyboard.dismiss();
+    setTimeout(() => {
+      addProductBottomSheetRef.current?.close();
+    }, 100);
+
+    // Reset temp product
+    setTempProduct({
+      id: '',
+      product: '',
+      shop: '',
+      quantity: '1',
+      rate: '0',
+      discount: '0',
+      tax: '0',
+      description: '',
+      price: '0',
+      purchase_price: '0',
+    });
+  }, [tempProduct, productModalMode]);
+
+  const updateTempProduct = useCallback((field: keyof ProductItem, value: string) => {
+    setTempProduct(prev => {
+      let updated = { ...prev, [field]: value };
+
+      // Validate rate against purchase price
+      if (field === 'rate') {
+        const rateValue = parseFloat(value) || 0;
+        const purchasePrice = parseFloat(updated.purchase_price || '0') || 0;
+        
+        // Only prevent rate less than purchase price
+        if (purchasePrice > 0 && rateValue > 0 && rateValue < purchasePrice) {
+          Alert.alert(
+            'Invalid Rate',
+            `Rate cannot be less than purchase price `,
+            [{ text: 'OK' }]
+          );
+          // Reset to purchase price
+          updated.rate = purchasePrice.toString();
+        }
+      }
       
-      // Scroll to the new product after a short delay to ensure it's rendered
-      setTimeout(() => {
-        productsListRef.current?.scrollToEnd({ animated: true });
-      }, 100);
+      // Recalculate price when quantity or rate changes
+      if (field === 'quantity' || field === 'rate' || field === 'discount') {
+        const quantity = parseFloat(field === 'quantity' ? value : updated.quantity) || 0;
+        const rate = parseFloat(field === 'rate' ? value : updated.rate) || 0;
+        const discount = parseFloat(field === 'discount' ? value : updated.discount) || 0;
+        
+        const subtotal = quantity * rate;
+        const discountAmount = (subtotal * discount) / 100;
+        const finalPrice = subtotal - discountAmount;
+        
+        updated.price = finalPrice.toFixed(2);
+      }
       
-      return newProducts;
+      return updated;
     });
   }, []);
 
@@ -363,41 +586,82 @@ export default function EditInvoice() {
   }, []);
 
   const addPayment = useCallback(() => {
-    const newPayment: PaymentDetail = {
+    // Reset temp payment and show bottom sheet
+    setTempPayment({
       id: Date.now().toString(),
       amount: '0',
       account: '',
       date: new Date().toLocaleDateString(),
       reference: '',
-    };
-    setPaymentDetails(prev => {
-      const newPayments = [...prev, newPayment];
-      
-      // Scroll to the new payment after a short delay to ensure it's rendered
-      setTimeout(() => {
-        paymentsListRef.current?.scrollToEnd({ animated: true });
-      }, 100);
-      
-      return newPayments;
     });
+    setPaymentModalMode('add');
+    addPaymentBottomSheetRef.current?.snapToIndex(0);
   }, []);
 
-  const updatePayment = useCallback((id: string, field: keyof PaymentDetail, value: string) => {
-    setPaymentDetails(prevPayments => prevPayments.map(payment => 
-      payment.id === id ? { ...payment, [field]: value } : payment
-    ));
+  const editPayment = useCallback((payment: PaymentDetail) => {
+    // Load payment into temp and show bottom sheet
+    setTempPayment(payment);
+    setPaymentModalMode('edit');
+    addPaymentBottomSheetRef.current?.snapToIndex(0);
+  }, []);
+
+  const confirmAddPayment = useCallback(() => {
+    // Validate required fields
+    if (!tempPayment.account.trim()) {
+      Alert.alert('Error', 'Please select an account');
+      return;
+    }
+
+    if (paymentModalMode === 'add') {
+      // Add the payment to the list
+      setPaymentDetails(prev => [...prev, { ...tempPayment, id: Date.now().toString() }]);
+    } else {
+      // Update existing payment
+      setPaymentDetails(prevPayments => prevPayments.map(payment =>
+        payment.id === tempPayment.id ? tempPayment : payment
+      ));
+    }
+
+    // Dismiss keyboard and close bottom sheet
+    Keyboard.dismiss();
+    setTimeout(() => {
+      addPaymentBottomSheetRef.current?.close();
+    }, 100);
+
+    // Reset temp payment
+    setTempPayment({
+      id: '',
+      amount: '0',
+      account: '',
+      date: new Date().toLocaleDateString(),
+      reference: '',
+    });
+  }, [tempPayment, paymentModalMode]);
+
+  const updateTempPayment = useCallback((field: keyof PaymentDetail, value: string) => {
+    setTempPayment(prev => ({ ...prev, [field]: value }));
   }, []);
 
   const removePayment = useCallback((id: string) => {
-    setPaymentDetails(prevPayments => {
-      if (prevPayments.length > 1) {
-        return prevPayments.filter(payment => payment.id !== id);
-      }
-      return prevPayments;
-    });
+    Alert.alert('Delete Payment', 'Are you sure you want to delete this payment?', [
+      { text: 'Cancel', onPress: () => {}, style: 'cancel' },
+      {
+        text: 'Delete',
+        onPress: () => {
+          setPaymentDetails(prevPayments => {
+            if (prevPayments.length > 1) {
+              return prevPayments.filter(payment => payment.id !== id);
+            }
+            Alert.alert('Error', 'Invoice must have at least one payment record');
+            return prevPayments;
+          });
+        },
+        style: 'destructive',
+      },
+    ]);
   }, []);
 
-  const handleUpdate = () => {
+  const handleUpdate = async () => {
     // Validate required fields
     if (customerType === 'customer' && !selectedCustomer) {
       Alert.alert('Error', 'Please select a customer');
@@ -420,15 +684,83 @@ export default function EditInvoice() {
       return;
     }
 
+    if (!selectedCategory) {
+      Alert.alert('Error', 'Please select a category');
+      return;
+    }
+
+    if (!selectedWarehouse) {
+      Alert.alert('Error', 'Please select a warehouse');
+      return;
+    }
+
     if (products.some(p => !p.product.trim())) {
       Alert.alert('Error', 'Please fill in all product details');
       return;
     }
 
-    // Update invoice logic here
-    Alert.alert('Success', 'Invoice updated successfully!', [
-      { text: 'OK', onPress: () => router.back() }
-    ]);
+    try {
+      setIsUpdating(true);
+      console.log('[EditInvoice] Updating invoice with ID:', id);
+
+      // Prepare update payload
+      const updatePayload = {
+        issue_date: issueDate.toISOString().split('T')[0],
+        due_date: dueDate.toISOString().split('T')[0],
+        category_id: categoryId || 9,
+        warehouse_id: warehouseId || 1,
+        customer_id: customerId || 251,
+        delivery_status: deliveryStatus,
+        sale_type: 'single_warehouse',
+        ref_number: referenceNumber || '',
+        discount_apply: parseFloat(masterDiscount || '0'),
+        items: products.map((product) => ({
+          id: parseInt(product.id) || 0,
+          quantity: parseInt(product.quantity) || 0,
+          price: parseFloat(product.rate) || 0,
+          description: product.description,
+        })),
+        payments: paymentDetails.map((payment) => ({
+          date: payment.date,
+          amount: parseFloat(payment.amount) || 0,
+          account_id: 4, // You may need to make this dynamic
+          payment_method: 1, // You may need to make this dynamic
+          reference: payment.reference || '',
+          description: '',
+        })),
+      };
+
+      console.log('[EditInvoice] Update payload:', updatePayload);
+
+      const result = await invoiceService.updateInvoice(id, updatePayload);
+      
+      // Safety check - ensure result is defined
+      if (!result) {
+        console.error('[EditInvoice] updateInvoice returned null/undefined');
+        Alert.alert('Error', 'Failed to get response from server');
+        setIsUpdating(false);
+        return;
+      }
+
+      if (result.success === true) {
+        console.log('[EditInvoice] Invoice updated successfully');
+        const total = typeof result.total === 'number' ? result.total : 0;
+        const paid = typeof result.paid === 'number' ? result.paid : 0;
+        const due = typeof result.due === 'number' ? result.due : 0;
+        Alert.alert('Success', `${result.message || 'Invoice updated successfully'}\n\nTotal: Rs. ${total}\nPaid: Rs. ${paid}\nDue: Rs. ${due}`, [
+          { text: 'OK', onPress: () => router.back() }
+        ]);
+      } else {
+        console.log('[EditInvoice] Update failed - result:', result);
+        const errorMessage = result?.message || 'Failed to update invoice';
+        Alert.alert('Error', errorMessage);
+      }
+    } catch (error: any) {
+      console.error('[EditInvoice] Error updating invoice:', error);
+      Alert.alert('Error', error?.message || 'An unexpected error occurred');
+    } finally {
+      setIsUpdating(false);
+    }
   };
 
   const handleCancel = () => {
@@ -442,125 +774,59 @@ export default function EditInvoice() {
     );
   };
 
-  // Memoized ProductItem component for better performance
+  // Memoized ProductItem component for better performance (Table Row)
   const ProductItemComponent = React.memo(({ 
     product, 
     index, 
     onUpdate, 
+    onEdit,
     onRemove, 
     canRemove 
   }: {
     product: ProductItem;
     index: number;
     onUpdate: (id: string, field: keyof ProductItem, value: string) => void;
+    onEdit: (product: ProductItem) => void;
     onRemove: (id: string) => void;
     canRemove: boolean;
   }) => {
     return (
-      <View style={stylesLocal.productCard}>
-        <View style={stylesLocal.productHeader}>
-          <Text style={stylesLocal.productNumber}>Product #{index + 1}</Text>
+      <View style={stylesLocal.tableRow}>
+        <Text style={[stylesLocal.tableCell, stylesLocal.tableCellIndex]}>{index + 1}</Text>
+        <TextInput
+          style={[stylesLocal.tableCell, stylesLocal.tableCellFlexSmall]}
+          value={product.quantity}
+          onChangeText={(value) => onUpdate(product.id, 'quantity', value)}
+          placeholder="Qty"
+          placeholderTextColor={icon}
+          keyboardType="numeric"
+        />
+        <TextInput
+          style={[stylesLocal.tableCell, stylesLocal.tableCellFlexMedium]}
+          value={product.rate}
+          onChangeText={(value) => onUpdate(product.id, 'rate', value)}
+          placeholder="Rate"
+          placeholderTextColor={icon}
+          keyboardType="numeric"
+        />
+        <Text style={[stylesLocal.tableCell, stylesLocal.tableCellFlexPrice]}>{product.price}</Text>
+        <View style={stylesLocal.tableActionsCell}>
+          <TouchableOpacity
+            onPress={() => onEdit(product)}
+            style={stylesLocal.tableEditBtn}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+          >
+            <MaterialIcons name="edit" size={resp.fontSize(16)} color="#3b82f6" />
+          </TouchableOpacity>
           {canRemove && (
             <TouchableOpacity
-              style={stylesLocal.removeButton}
               onPress={() => onRemove(product.id)}
-              accessibilityLabel={`Remove product ${index + 1}`}
+              style={stylesLocal.tableDeleteBtn}
+              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
             >
-              <MaterialIcons name="close" size={resp.fontSize(16)} color="#e74c3c" />
+              <MaterialIcons name="delete-outline" size={resp.fontSize(16)} color="#ef4444" />
             </TouchableOpacity>
           )}
-        </View>
-
-        <View style={stylesLocal.productForm}>
-          <View style={stylesLocal.formRow}>
-            <Text style={stylesLocal.formLabel}>Product Name</Text>
-            <TextInput
-              style={stylesLocal.formInput}
-              placeholder="Enter product name"
-              placeholderTextColor={icon}
-              value={product.product}
-              onChangeText={(value) => onUpdate(product.id, 'product', value)}
-            />
-          </View>
-
-          <View style={stylesLocal.formRow}>
-            <Text style={stylesLocal.formLabel}>Shop</Text>
-            <TouchableOpacity style={stylesLocal.formInput}>
-              <Text style={[stylesLocal.inputText, { color: product.shop ? text : icon }]}>
-                {product.shop || 'Select shop'}
-              </Text>
-              <MaterialIcons name="keyboard-arrow-down" size={resp.fontSize(20)} color={icon} />
-            </TouchableOpacity>
-          </View>
-
-          <View style={stylesLocal.row}>
-            <View style={[stylesLocal.halfWidth, stylesLocal.formRow]}>
-              <Text style={stylesLocal.formLabel}>Quantity</Text>
-              <TextInput
-                style={stylesLocal.formInput}
-                placeholder="0"
-                placeholderTextColor={icon}
-                value={product.quantity}
-                onChangeText={(value) => onUpdate(product.id, 'quantity', value)}
-                keyboardType="numeric"
-              />
-            </View>
-
-            <View style={[stylesLocal.halfWidth, stylesLocal.formRow]}>
-              <Text style={stylesLocal.formLabel}>Rate</Text>
-              <TextInput
-                style={stylesLocal.formInput}
-                placeholder="0.00"
-                placeholderTextColor={icon}
-                value={product.rate}
-                onChangeText={(value) => onUpdate(product.id, 'rate', value)}
-                keyboardType="numeric"
-              />
-            </View>
-          </View>
-
-          <View style={stylesLocal.row}>
-            <View style={[stylesLocal.halfWidth, stylesLocal.formRow]}>
-              <Text style={stylesLocal.formLabel}>Discount (%)</Text>
-              <TextInput
-                style={stylesLocal.formInput}
-                placeholder="0"
-                placeholderTextColor={icon}
-                value={product.discount}
-                onChangeText={(value) => onUpdate(product.id, 'discount', value)}
-                keyboardType="numeric"
-              />
-            </View>
-
-            <View style={[stylesLocal.halfWidth, stylesLocal.formRow]}>
-              <Text style={stylesLocal.formLabel}>Tax</Text>
-              <TextInput
-                style={stylesLocal.formInput}
-                placeholder="0"
-                placeholderTextColor={icon}
-                value={product.tax}
-                onChangeText={(value) => onUpdate(product.id, 'tax', value)}
-                keyboardType="numeric"
-              />
-            </View>
-          </View>
-
-          <View style={stylesLocal.formRow}>
-            <Text style={stylesLocal.formLabel}>Description</Text>
-            <TextInput
-              style={stylesLocal.formInput}
-              placeholder="Enter product description"
-              placeholderTextColor={icon}
-              value={product.description}
-              onChangeText={(value) => onUpdate(product.id, 'description', value)}
-              multiline
-            />
-          </View>
-
-          <View style={stylesLocal.priceRow}>
-            <Text style={stylesLocal.priceLabel}>Total Price:</Text>
-            <Text style={stylesLocal.priceValue}>{product.price} Rs.</Text>
-          </View>
         </View>
       </View>
     );
@@ -573,11 +839,12 @@ export default function EditInvoice() {
         product={item}
         index={index}
         onUpdate={updateProduct}
+        onEdit={editProduct}
         onRemove={removeProduct}
         canRemove={products.length > 1}
       />
     );
-  }, [updateProduct, removeProduct, products.length]);
+  }, [updateProduct, editProduct, removeProduct, products.length]);
 
   // Key extractor for FlatList
   const keyExtractor = useCallback((item: ProductItem) => item.id, []);
@@ -603,84 +870,43 @@ export default function EditInvoice() {
     </View>
   ), [totals, masterDiscount]);
 
-  // Memoized PaymentItem component for better performance
+  // Memoized PaymentItem component - table row with edit/delete actions
   const PaymentItemComponent = React.memo(({ 
     payment, 
     index, 
-    onUpdate, 
-    onRemove, 
-    canRemove,
-    onAccountSelect 
+    onEdit,
+    onRemove,
+    canRemove
   }: {
     payment: PaymentDetail;
     index: number;
-    onUpdate: (id: string, field: keyof PaymentDetail, value: string) => void;
+    onEdit: (payment: PaymentDetail) => void;
     onRemove: (id: string) => void;
     canRemove: boolean;
-    onAccountSelect: (index: number) => void;
   }) => {
     return (
-      <View style={stylesLocal.paymentCard}>
-        <View style={stylesLocal.productHeader}>
-          <Text style={stylesLocal.productNumber}>Payment #{index + 1}</Text>
+      <View style={stylesLocal.paymentTableRow}>
+        <Text style={[stylesLocal.tableCell, stylesLocal.tableCellIndex]}>{index + 1}</Text>
+        <Text style={[stylesLocal.tableCell, stylesLocal.tableCellFlexSmall]}>{payment.amount}</Text>
+        <Text style={[stylesLocal.tableCell, stylesLocal.tableCellFlexMedium]} numberOfLines={1}>{payment.account || 'Select'}</Text>
+        <Text style={[stylesLocal.tableCell, stylesLocal.tableCellFlexSmall]}>{payment.date}</Text>
+        <View style={stylesLocal.tableActionsCell}>
+          <TouchableOpacity
+            onPress={() => onEdit(payment)}
+            style={stylesLocal.tableEditBtn}
+            hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
+          >
+            <MaterialIcons name="edit" size={resp.fontSize(16)} color="#3b82f6" />
+          </TouchableOpacity>
           {canRemove && (
             <TouchableOpacity
-              style={stylesLocal.removeButton}
               onPress={() => onRemove(payment.id)}
-              accessibilityLabel={`Remove payment ${index + 1}`}
+              style={stylesLocal.tableDeleteBtn}
+              hitSlop={{ top: 6, bottom: 6, left: 6, right: 6 }}
             >
-              <MaterialIcons name="close" size={resp.fontSize(16)} color="#e74c3c" />
+              <MaterialIcons name="delete-outline" size={resp.fontSize(16)} color="#ef4444" />
             </TouchableOpacity>
           )}
-        </View>
-
-        <View style={stylesLocal.row}>
-          <View style={[stylesLocal.halfWidth, stylesLocal.formRow]}>
-            <Text style={stylesLocal.formLabel}>Amount</Text>
-            <TextInput
-              style={stylesLocal.formInput}
-              placeholder="0.00"
-              placeholderTextColor={icon}
-              value={payment.amount}
-              onChangeText={(value) => onUpdate(payment.id, 'amount', value)}
-              keyboardType="numeric"
-            />
-          </View>
-          <View style={[stylesLocal.halfWidth, stylesLocal.formRow]}>
-            <Text style={stylesLocal.formLabel}>Account</Text>
-            <TouchableOpacity 
-              style={stylesLocal.formInput}
-              onPress={() => onAccountSelect(index)}
-            >
-              <Text style={[stylesLocal.inputText, { color: payment.account ? text : icon }]}>
-                {payment.account || 'Select account'}
-              </Text>
-              <MaterialIcons name="keyboard-arrow-down" size={resp.fontSize(20)} color={icon} />
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={stylesLocal.row}>
-          <View style={[stylesLocal.halfWidth, stylesLocal.formRow]}>
-            <Text style={stylesLocal.formLabel}>Date</Text>
-            <TextInput
-              style={stylesLocal.formInput}
-              placeholder="Date"
-              placeholderTextColor={icon}
-              value={payment.date}
-              onChangeText={(value) => onUpdate(payment.id, 'date', value)}
-            />
-          </View>
-          <View style={[stylesLocal.halfWidth, stylesLocal.formRow]}>
-            <Text style={stylesLocal.formLabel}>Reference</Text>
-            <TextInput
-              style={stylesLocal.formInput}
-              placeholder="Reference"
-              placeholderTextColor={icon}
-              value={payment.reference}
-              onChangeText={(value) => onUpdate(payment.id, 'reference', value)}
-            />
-          </View>
         </View>
       </View>
     );
@@ -692,16 +918,12 @@ export default function EditInvoice() {
       <PaymentItemComponent
         payment={item}
         index={index}
-        onUpdate={updatePayment}
+        onEdit={editPayment}
         onRemove={removePayment}
         canRemove={paymentDetails.length > 1}
-        onAccountSelect={(paymentIndex) => {
-          setSelectedPaymentIndex(paymentIndex);
-          setShowAccountModal(true);
-        }}
       />
     );
-  }, [updatePayment, removePayment, paymentDetails.length]);
+  }, [editPayment, removePayment, paymentDetails.length]);
 
   // Payment key extractor
   const paymentKeyExtractor = useCallback((item: PaymentDetail) => item.id, []);
@@ -840,9 +1062,26 @@ export default function EditInvoice() {
     );
   }
 
+  // Render backdrop for payment bottom sheet
+  const renderPaymentBackdrop = useCallback(
+    (props: any) => (
+      <BottomSheetBackdrop {...props} opacity={0.6} />
+    ),
+    []
+  );
+
+  // Render backdrop for product bottom sheet
+  const renderProductBackdrop = useCallback(
+    (props: any) => (
+      <BottomSheetBackdrop {...props} opacity={0.6} />
+    ),
+    []
+  );
+
   return (
-    <SafeAreaView style={{ flex: 1 }} edges={["bottom"]}>
-      <ThemedView style={[stylesLocal.container, { backgroundColor: bg }]}>
+    <GestureHandlerRootView style={{ flex: 1 }}>
+      <SafeAreaView style={{ flex: 1 }} edges={["bottom"]}>
+        <ThemedView style={[stylesLocal.container, { backgroundColor: bg }]}>
         {/* Header */}
         <View style={stylesLocal.header}>
           <TouchableOpacity style={stylesLocal.backBtn} onPress={() => router.back()}>
@@ -852,6 +1091,31 @@ export default function EditInvoice() {
           <View style={stylesLocal.headerSpacer} />
         </View>
 
+        {/* Loading State */}
+        {loading && (
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+            <ActivityIndicator size="large" color={tint} />
+            <Text style={{ marginTop: 16, color: text, fontSize: resp.fontSize(14) }}>Loading invoice...</Text>
+          </View>
+        )}
+
+        {/* Error State */}
+        {error && !loading && (
+          <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: resp.horizontalScale(20) }}>
+            <Text style={{ color: '#e74c3c', fontSize: resp.fontSize(16), marginBottom: 20, textAlign: 'center' }}>
+              {error}
+            </Text>
+            <TouchableOpacity
+              style={{ backgroundColor: tint, paddingHorizontal: resp.horizontalScale(24), paddingVertical: resp.vertical(12), borderRadius: resp.horizontalScale(8) }}
+              onPress={() => id && loadInvoiceData(id)}
+            >
+              <Text style={{ color: '#fff', fontWeight: '600', fontSize: resp.fontSize(14) }}>Try Again</Text>
+            </TouchableOpacity>
+          </View>
+        )}
+
+        {/* Form Content */}
+        {!loading && !error && (
         <ScrollView 
           ref={mainScrollViewRef}
           style={{ flex: 1 }}
@@ -938,7 +1202,7 @@ export default function EditInvoice() {
           <View style={stylesLocal.section}>
             <Text style={stylesLocal.sectionTitle}>Invoice Details</Text>
             
-            <View style={stylesLocal.row}>
+            <View style={[stylesLocal.row, { marginBottom: resp.vertical(12) }]}>
               <View style={stylesLocal.halfWidth}>
                 <TouchableOpacity
                   style={stylesLocal.input}
@@ -965,7 +1229,7 @@ export default function EditInvoice() {
               </View>
             </View>
 
-            <View style={stylesLocal.row}>
+            <View style={[stylesLocal.row, { marginBottom: resp.vertical(12) }]}>
               <View style={stylesLocal.halfWidth}>
                 <TouchableOpacity
                   style={stylesLocal.input}
@@ -974,28 +1238,6 @@ export default function EditInvoice() {
                   <Text style={stylesLocal.inputText}>{deliveryStatus}</Text>
                   <MaterialIcons name="keyboard-arrow-down" size={resp.fontSize(20)} color={icon} />
                 </TouchableOpacity>
-              </View>
-              <View style={stylesLocal.halfWidth}>
-                <TextInput
-                  style={stylesLocal.textInput}
-                  placeholder="Reference Number"
-                  placeholderTextColor={icon}
-                  value={referenceNumber}
-                  onChangeText={setReferenceNumber}
-                />
-              </View>
-            </View>
-
-            <View style={stylesLocal.row}>
-              <View style={stylesLocal.halfWidth}>
-                <TextInput
-                  style={stylesLocal.textInput}
-                  placeholder="Invoice Number"
-                  placeholderTextColor={icon}
-                  value={invoiceNumber}
-                  onChangeText={setInvoiceNumber}
-                  editable={false}
-                />
               </View>
               <View style={stylesLocal.halfWidth}>
                 <TouchableOpacity
@@ -1010,37 +1252,41 @@ export default function EditInvoice() {
               </View>
             </View>
 
-            <View style={stylesLocal.row}>
+            <View style={[stylesLocal.row, { marginBottom: resp.vertical(12) }]}>
               <View style={stylesLocal.halfWidth}>
                 <TextInput
                   style={stylesLocal.textInput}
-                  placeholder="Master Discount (%)"
+                  placeholder="Invoice Number"
                   placeholderTextColor={icon}
-                  value={masterDiscount}
-                  onChangeText={setMasterDiscount}
-                  keyboardType="numeric"
+                  value={invoiceNumber}
+                  onChangeText={setInvoiceNumber}
+                  editable={false}
                 />
               </View>
               <View style={stylesLocal.halfWidth}>
-                <View style={stylesLocal.radioGroup}>
-                  <TouchableOpacity
-                    style={stylesLocal.radioOption}
-                    onPress={() => setStockType('send-now')}
-                  >
-                    <View style={[stylesLocal.radio, stockType === 'send-now' && stylesLocal.radioSelected]} />
-                    <Text style={stylesLocal.radioText}>Send Now</Text>
-                  </TouchableOpacity>
-                  
-                  <TouchableOpacity
-                    style={stylesLocal.radioOption}
-                    onPress={() => setStockType('multi-ship')}
-                  >
-                    <View style={[stylesLocal.radio, stockType === 'multi-ship' && stylesLocal.radioSelected]} />
-                    <Text style={stylesLocal.radioText}>Multi Ship</Text>
-                  </TouchableOpacity>
-                </View>
+                <TouchableOpacity
+                  style={stylesLocal.input}
+                  onPress={() => setShowWarehouseModal(true)}
+                >
+                  <Text style={[stylesLocal.inputText, { color: selectedWarehouse ? text : icon }]}>
+                    {selectedWarehouse || 'Select Warehouse'}
+                  </Text>
+                  <MaterialIcons name="keyboard-arrow-down" size={resp.fontSize(20)} color={icon} />
+                </TouchableOpacity>
               </View>
             </View>
+
+            {/* <View style={stylesLocal.row}>
+              <View style={stylesLocal.halfWidth}>
+                <TextInput
+                  style={stylesLocal.textInput}
+                  placeholder="Reference Number"
+                  placeholderTextColor={icon}
+                  value={referenceNumber}
+                  onChangeText={setReferenceNumber}
+                />
+              </View>
+            </View> */}
           </View>
 
           {/* Products Section */}
@@ -1057,6 +1303,13 @@ export default function EditInvoice() {
             </View>
 
             <View style={stylesLocal.productsContainer}>
+              <View style={stylesLocal.tableHeader}>
+                <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellIndex]}>#</Text>
+                <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexSmall]}>Qty</Text>
+                <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexMedium]}>Rate</Text>
+                <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexPrice]}>Amount</Text>
+                <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableActionsHeader]}>Action</Text>
+              </View>
               <FlatList
                 ref={productsListRef}
                 data={products}
@@ -1084,6 +1337,13 @@ export default function EditInvoice() {
             </View>
 
             <View style={stylesLocal.productsContainer}>
+              <View style={stylesLocal.tableHeader}>
+                <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellIndex]}>#</Text>
+                <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexSmall]}>Amount</Text>
+                <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexMedium]}>Account</Text>
+                <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexSmall]}>Date</Text>
+                <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableActionsHeader]}>Action</Text>
+              </View>
               <FlatList
                 ref={paymentsListRef}
                 data={paymentDetails}
@@ -1097,8 +1357,10 @@ export default function EditInvoice() {
             </View>
           </View>
         </ScrollView>
+        )}
 
         {/* Bottom Actions */}
+        {!loading && !error && (
         <View style={stylesLocal.bottomActions}>
           <TouchableOpacity
             style={stylesLocal.cancelButton}
@@ -1108,18 +1370,22 @@ export default function EditInvoice() {
           </TouchableOpacity>
           
           <TouchableOpacity
-            style={stylesLocal.createButton}
+            style={[stylesLocal.createButton, isUpdating && { opacity: 0.6 }]}
             onPress={handleUpdate}
+            disabled={isUpdating}
           >
-            <Text style={stylesLocal.createButtonText}>Update Invoice</Text>
+            {isUpdating ? (
+              <ActivityIndicator color="#fff" size="small" />
+            ) : (
+              <Text style={stylesLocal.createButtonText}>Update Invoice</Text>
+            )}
           </TouchableOpacity>
         </View>
-
-        {/* Modals */}
+        )}        {/* Modals */}
         <DropdownModal
           visible={showCustomerModal}
           title={customerType === 'dealers' ? 'Select Dealer' : 'Select Customer'}
-          options={SAMPLE_CUSTOMERS}
+          options={customers.map(c => c.name)}
           onClose={() => setShowCustomerModal(false)}
           onSelect={setSelectedCustomer}
         />
@@ -1127,15 +1393,31 @@ export default function EditInvoice() {
         <DropdownModal
           visible={showCategoryModal}
           title="Select Category"
-          options={SAMPLE_CATEGORIES}
+          options={categories.map(c => c.name)}
           onClose={() => setShowCategoryModal(false)}
-          onSelect={setSelectedCategory}
+          onSelect={(categoryName) => {
+            setSelectedCategory(categoryName);
+            const cat = categories.find(c => c.name === categoryName);
+            if (cat) setCategoryId(cat.id);
+          }}
+        />
+
+        <DropdownModal
+          visible={showWarehouseModal}
+          title="Select Warehouse"
+          options={warehouses.map(w => w.name)}
+          onClose={() => setShowWarehouseModal(false)}
+          onSelect={(warehouseName) => {
+            setSelectedWarehouse(warehouseName);
+            const wh = warehouses.find(w => w.name === warehouseName);
+            if (wh) setWarehouseId(wh.id);
+          }}
         />
 
         <DropdownModal
           visible={showDeliveryModal}
           title="Select Delivery Status"
-          options={['Pending', 'Processing', 'Shipped', 'Out for delivery', 'Delivered']}
+          options={deliveryStatuses}
           onClose={() => setShowDeliveryModal(false)}
           onSelect={setDeliveryStatus}
         />
@@ -1146,7 +1428,7 @@ export default function EditInvoice() {
           options={SAMPLE_ACCOUNTS}
           onClose={() => setShowAccountModal(false)}
           onSelect={(account) => {
-            updatePayment(paymentDetails[selectedPaymentIndex].id, 'account', account);
+            updateTempPayment('account', account);
             setShowAccountModal(false);
           }}
         />
@@ -1163,8 +1445,289 @@ export default function EditInvoice() {
             setShowDateModal(false);
           }}
         />
+
+        {/* Product Bottom Sheet Modal */}
+        <BottomSheet
+          ref={addProductBottomSheetRef}
+          index={-1}
+          snapPoints={productSnapPoints}
+          enablePanDownToClose={true}
+          backdropComponent={renderProductBackdrop}
+          backgroundStyle={{ backgroundColor: bg }}
+          handleIndicatorStyle={{ backgroundColor: icon }}
+          onChange={(index) => {
+            if (index === -1) {
+              Keyboard.dismiss();
+            }
+          }}
+        >
+          <View style={stylesLocal.bottomSheetHeader}>
+            <TouchableOpacity onPress={() => {
+              Keyboard.dismiss();
+              addProductBottomSheetRef.current?.close();
+            }} style={stylesLocal.modalCloseBtn}>
+              <MaterialIcons name="close" size={resp.fontSize(24)} color={icon} />
+            </TouchableOpacity>
+            <Text style={stylesLocal.bottomSheetTitle}>{productModalMode === 'add' ? 'Add Product' : 'Edit Product'}</Text>
+            <View style={{ width: resp.horizontalScale(40) }} />
+          </View>
+
+          <BottomSheetScrollView
+            contentContainerStyle={stylesLocal.bottomSheetContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={stylesLocal.modalForm}>
+              {/* Product Name with Search */}
+              <View style={stylesLocal.formRow}>
+                <Text style={stylesLocal.formLabel}>Product Name *</Text>
+                <View style={{ position: 'relative' }}>
+                  <TextInput
+                    style={stylesLocal.formInput}
+                    value={productSearchQuery || tempProduct.product}
+                    onChangeText={(value) => {
+                      setProductSearchQuery(value);
+                      updateTempProduct('product', value);
+                    }}
+                    placeholder="Search or enter product name"
+                    placeholderTextColor={icon}
+                    onFocus={() => {
+                      if (productSuggestions.length > 0) {
+                        setShowProductSuggestions(true);
+                      }
+                    }}
+                  />
+                  {isSearchingProducts && (
+                    <View style={stylesLocal.searchLoader}>
+                      <Text style={{ color: icon, fontSize: resp.fontSize(12) }}>Searching...</Text>
+                    </View>
+                  )}
+                  {showProductSuggestions && productSuggestions.length > 0 && (
+                    <View style={stylesLocal.suggestionsContainer}>
+                      <ScrollView
+                        style={stylesLocal.suggestionsList}
+                        keyboardShouldPersistTaps="handled"
+                        nestedScrollEnabled={true}
+                      >
+                        {productSuggestions.map((item) => (
+                          <TouchableOpacity
+                            key={item.id.toString()}
+                            style={stylesLocal.suggestionItem}
+                            onPress={() => selectProductFromSuggestions(item)}
+                          >
+                            <Text style={[stylesLocal.suggestionText, { color: text }]}>
+                              {item.label}
+                            </Text>
+                          </TouchableOpacity>
+                        ))}
+                      </ScrollView>
+                    </View>
+                  )}
+                </View>
+              </View>
+
+              {/* Quantity and Rate */}
+              <View style={stylesLocal.row}>
+                <View style={stylesLocal.halfWidth}>
+                  <Text style={stylesLocal.formLabel}>Quantity *</Text>
+                  <TextInput
+                    style={stylesLocal.formInput}
+                    value={tempProduct.quantity}
+                    onChangeText={(value) => updateTempProduct('quantity', value)}
+                    placeholder="1"
+                    placeholderTextColor={icon}
+                    keyboardType="numeric"
+                  />
+                </View>
+                <View style={stylesLocal.halfWidth}>
+                  <Text style={stylesLocal.formLabel}>Rate/Price *</Text>
+                  <TextInput
+                    style={stylesLocal.formInput}
+                    value={tempProduct.rate}
+                    onChangeText={(value) => updateTempProduct('rate', value)}
+                    placeholder="0"
+                    placeholderTextColor={icon}
+                    keyboardType="numeric"
+                  />
+                </View>
+              </View>
+
+              {/* Discount and Tax */}
+              <View style={stylesLocal.row}>
+                <View style={stylesLocal.halfWidth}>
+                  <Text style={stylesLocal.formLabel}>Discount %</Text>
+                  <TextInput
+                    style={stylesLocal.formInput}
+                    value={tempProduct.discount}
+                    onChangeText={(value) => updateTempProduct('discount', value)}
+                    placeholder="0"
+                    placeholderTextColor={icon}
+                    keyboardType="numeric"
+                  />
+                </View>
+                <View style={stylesLocal.halfWidth}>
+                  <Text style={stylesLocal.formLabel}>Tax %</Text>
+                  <TextInput
+                    style={stylesLocal.formInput}
+                    value={tempProduct.tax}
+                    onChangeText={(value) => updateTempProduct('tax', value)}
+                    placeholder="0"
+                    placeholderTextColor={icon}
+                    keyboardType="numeric"
+                  />
+                </View>
+              </View>
+
+              {/* Description */}
+              <View style={stylesLocal.formRow}>
+                <Text style={stylesLocal.formLabel}>Description</Text>
+                <TextInput
+                  style={[stylesLocal.formInput, {
+                    height: resp.vertical(100),
+                    paddingTop: resp.vertical(16),
+                    textAlignVertical: 'top'
+                  }]}
+                  value={tempProduct.description}
+                  onChangeText={(value) => updateTempProduct('description', value)}
+                  placeholder="Enter description"
+                  placeholderTextColor={icon}
+                  multiline
+                />
+              </View>
+
+              {/* Total Price Display */}
+              <View style={stylesLocal.priceRow}>
+                <Text style={stylesLocal.priceLabel}>Total Price:</Text>
+                <Text style={stylesLocal.priceValue}>{tempProduct.price} Rs.</Text>
+              </View>
+            </View>
+          </BottomSheetScrollView>
+
+          <View style={stylesLocal.bottomSheetFooter}>
+            <TouchableOpacity
+              style={[stylesLocal.modalButton, stylesLocal.modalCancelButton]}
+              onPress={() => {
+                Keyboard.dismiss();
+                addProductBottomSheetRef.current?.close();
+              }}
+            >
+              <Text style={stylesLocal.modalCancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[stylesLocal.modalButton, stylesLocal.modalAddButton]}
+              onPress={confirmAddProduct}
+            >
+              <Text style={stylesLocal.modalAddButtonText}>{productModalMode === 'add' ? 'Add Product' : 'Update Product'}</Text>
+            </TouchableOpacity>
+          </View>
+        </BottomSheet>
+
+        {/* Payment Bottom Sheet Modal */}
+        <BottomSheet
+          ref={addPaymentBottomSheetRef}
+          index={-1}
+          snapPoints={paymentSnapPoints}
+          enablePanDownToClose={true}
+          backdropComponent={renderPaymentBackdrop}
+          backgroundStyle={{ backgroundColor: bg }}
+          handleIndicatorStyle={{ backgroundColor: icon }}
+          onChange={(index) => {
+            if (index === -1) {
+              Keyboard.dismiss();
+            }
+          }}
+        >
+          <View style={stylesLocal.bottomSheetHeader}>
+            <TouchableOpacity onPress={() => {
+              Keyboard.dismiss();
+              addPaymentBottomSheetRef.current?.close();
+            }} style={stylesLocal.modalCloseBtn}>
+              <MaterialIcons name="close" size={resp.fontSize(24)} color={icon} />
+            </TouchableOpacity>
+            <Text style={stylesLocal.bottomSheetTitle}>{paymentModalMode === 'add' ? 'Add Payment' : 'Edit Payment'}</Text>
+            <View style={{ width: resp.horizontalScale(40) }} />
+          </View>
+
+          <BottomSheetScrollView
+            contentContainerStyle={stylesLocal.bottomSheetContent}
+            keyboardShouldPersistTaps="handled"
+          >
+            <View style={stylesLocal.modalForm}>
+              {/* Amount and Account */}
+              <View style={stylesLocal.row}>
+                <View style={stylesLocal.halfWidth}>
+                  <Text style={stylesLocal.formLabel}>Amount *</Text>
+                  <TextInput
+                    style={stylesLocal.formInput}
+                    value={tempPayment.amount}
+                    onChangeText={(value) => updateTempPayment('amount', value)}
+                    placeholder="0"
+                    placeholderTextColor={icon}
+                    keyboardType="numeric"
+                  />
+                </View>
+                <View style={stylesLocal.halfWidth}>
+                  <Text style={stylesLocal.formLabel}>Account *</Text>
+                  <TouchableOpacity
+                    style={stylesLocal.input}
+                    onPress={() => setShowAccountModal(true)}
+                    activeOpacity={0.6}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                  >
+                    <Text style={[stylesLocal.inputText, { color: tempPayment.account ? text : icon }]}>
+                      {tempPayment.account || 'Select Account'}
+                    </Text>
+                    <MaterialIcons name="keyboard-arrow-down" size={resp.fontSize(20)} color={icon} />
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              {/* Date and Reference */}
+              <View style={stylesLocal.row}>
+                <View style={stylesLocal.halfWidth}>
+                  <Text style={stylesLocal.formLabel}>Date</Text>
+                  <TextInput
+                    style={stylesLocal.formInput}
+                    value={tempPayment.date}
+                    onChangeText={(value) => updateTempPayment('date', value)}
+                    placeholder="11/05/2025"
+                    placeholderTextColor={icon}
+                  />
+                </View>
+                <View style={stylesLocal.halfWidth}>
+                  <Text style={stylesLocal.formLabel}>Reference</Text>
+                  <TextInput
+                    style={stylesLocal.formInput}
+                    value={tempPayment.reference}
+                    onChangeText={(value) => updateTempPayment('reference', value)}
+                    placeholder="Enter Reference"
+                    placeholderTextColor={icon}
+                  />
+                </View>
+              </View>
+            </View>
+          </BottomSheetScrollView>
+
+          <View style={stylesLocal.bottomSheetFooter}>
+            <TouchableOpacity
+              style={[stylesLocal.modalButton, stylesLocal.modalCancelButton]}
+              onPress={() => {
+                Keyboard.dismiss();
+                addPaymentBottomSheetRef.current?.close();
+              }}
+            >
+              <Text style={stylesLocal.modalCancelButtonText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              style={[stylesLocal.modalButton, stylesLocal.modalAddButton]}
+              onPress={confirmAddPayment}
+            >
+              <Text style={stylesLocal.modalAddButtonText}>{paymentModalMode === 'add' ? 'Add Payment' : 'Update Payment'}</Text>
+            </TouchableOpacity>
+          </View>
+        </BottomSheet>
       </ThemedView>
     </SafeAreaView>
+    </GestureHandlerRootView>
   );
 }
 
@@ -1653,5 +2216,298 @@ const createStyles = (resp: ReturnType<typeof useResponsive>, theme: { bg: strin
       color: theme.text,
       fontSize: resp.fontSize(15),
       fontWeight: '500',
+    },
+    // Table styles
+    tableHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: resp.horizontalScale(12),
+      paddingVertical: resp.vertical(12),
+      backgroundColor: theme.bg === Colors.light.background ? '#f1f5f9' : '#334155',
+      borderTopLeftRadius: resp.horizontalScale(12),
+      borderTopRightRadius: resp.horizontalScale(12),
+      borderBottomWidth: 2,
+      borderBottomColor: theme.bg === Colors.light.background ? '#e2e8f0' : '#475569',
+    },
+    tableHeaderCell: {
+      fontSize: resp.fontSize(13),
+      fontWeight: '600',
+      color: theme.text,
+      textAlign: 'center',
+    },
+    tableRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: resp.horizontalScale(12),
+      paddingVertical: resp.vertical(10),
+      borderBottomWidth: 1,
+      gap: resp.horizontalScale(3),
+      borderBottomColor: theme.bg === Colors.light.background ? '#e2e8f0' : '#475569',
+      backgroundColor: theme.bg === Colors.light.background ? '#ffffff' : '#1e293b',
+    },
+    tableCell: {
+      fontSize: resp.fontSize(13),
+      color: theme.text,
+      paddingHorizontal: resp.horizontalScale(6),
+      paddingVertical: resp.vertical(8),
+      textAlign: 'center',
+      borderRadius: resp.horizontalScale(6),
+      backgroundColor: theme.bg === Colors.light.background ? '#f8fafc' : '#0f172a',
+      borderWidth: 1,
+      borderColor: theme.bg === Colors.light.background ? '#e2e8f0' : '#475569',
+    },
+    tableCellIndex: {
+      width: resp.horizontalScale(35),
+      fontWeight: '600',
+    },
+    tableCellProduct: {
+      flex: 1,
+      textAlign: 'left',
+      marginLeft: resp.horizontalScale(4),
+      marginRight: resp.horizontalScale(4),
+    },
+    tableCellSmall: {
+      width: resp.horizontalScale(55),
+    },
+    tableCellMedium: {
+      width: resp.horizontalScale(70),
+    },
+    tableCellPrice: {
+      width: resp.horizontalScale(75),
+      fontWeight: '600',
+      color: '#059669',
+    },
+    // Responsive flex-based table cells for mobile
+    tableCellFlexSmall: {
+      flex: 0.6,
+      fontWeight: '500',
+    },
+    tableCellFlexMedium: {
+      flex: 0.8,
+      fontWeight: '500',
+    },
+    tableCellFlexPrice: {
+      flex: 0.9,
+      fontWeight: '600',
+      color: '#059669',
+    },
+    // Action column styles
+    tableActionsCell: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'flex-end',
+      flex: 1.2,
+      gap: resp.horizontalScale(8),
+    },
+    tableActionsHeader: {
+      flex: 1.2,
+      textAlign: 'center',
+    },
+    tableEditBtn: {
+      width: resp.horizontalScale(32),
+      height: resp.horizontalScale(32),
+      borderRadius: resp.horizontalScale(16),
+      backgroundColor: '#dbeafe',
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    tableDeleteBtn: {
+      width: resp.horizontalScale(32),
+      height: resp.horizontalScale(32),
+      borderRadius: resp.horizontalScale(16),
+      backgroundColor: '#fee2e2',
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    paymentTableRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      paddingHorizontal: resp.horizontalScale(12),
+      paddingVertical: resp.vertical(10),
+      borderBottomWidth: 1,
+      borderBottomColor: theme.bg === Colors.light.background ? '#bae6fd' : '#1e40af',
+      backgroundColor: theme.bg === Colors.light.background ? '#f0f9ff' : '#0f172a',
+    },
+    tableCellAccount: {
+      flex: 1,
+      textAlign: 'left',
+      marginLeft: resp.horizontalScale(4),
+      marginRight: resp.horizontalScale(4),
+      justifyContent: 'center',
+    },
+    tableCellText: {
+      fontSize: resp.fontSize(13),
+      color: theme.text,
+    },
+    // Payment card styles for clickable payment items
+    paymentCardClickable: {
+      backgroundColor: theme.bg === Colors.light.background ? '#f0f9ff' : '#0f172a',
+      borderRadius: resp.horizontalScale(12),
+      padding: resp.horizontalScale(16),
+      marginBottom: resp.vertical(12),
+      borderWidth: 1,
+      borderColor: theme.bg === Colors.light.background ? '#bae6fd' : '#1e40af',
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 2 },
+      shadowOpacity: 0.06,
+      shadowRadius: 8,
+      elevation: 2,
+    },
+    paymentRowContent: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    },
+    paymentRowInfo: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flex: 1,
+      gap: resp.horizontalScale(12),
+    },
+    paymentRowIndex: {
+      fontSize: resp.fontSize(14),
+      fontWeight: '600',
+      color: theme.tint,
+      width: resp.horizontalScale(28),
+    },
+    paymentRowDetails: {
+      flex: 1,
+    },
+    paymentAmount: {
+      fontSize: resp.fontSize(14),
+      fontWeight: '600',
+      color: theme.text,
+      marginBottom: resp.vertical(2),
+    },
+    paymentAccount: {
+      fontSize: resp.fontSize(12),
+      color: theme.icon,
+      fontWeight: '400',
+    },
+    paymentRowMeta: {
+      alignItems: 'flex-end',
+      gap: resp.horizontalScale(8),
+    },
+    paymentDate: {
+      fontSize: resp.fontSize(12),
+      color: theme.icon,
+    },
+    // Bottom sheet styles
+    bottomSheetHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      paddingHorizontal: resp.horizontalScale(20),
+      paddingVertical: resp.vertical(16),
+      borderBottomWidth: 1,
+      borderBottomColor: theme.bg === Colors.light.background ? '#e2e8f0' : '#475569',
+    },
+    bottomSheetTitle: {
+      fontSize: resp.fontSize(18),
+      fontWeight: '600',
+      color: theme.text,
+      letterSpacing: -0.2,
+    },
+    bottomSheetContent: {
+      paddingHorizontal: resp.horizontalScale(20),
+      paddingBottom: resp.vertical(100),
+    },
+    bottomSheetFooter: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      paddingHorizontal: resp.horizontalScale(20),
+      paddingVertical: resp.vertical(20),
+      borderTopWidth: 1,
+      borderTopColor: theme.bg === Colors.light.background ? '#e2e8f0' : '#475569',
+      gap: resp.horizontalScale(16),
+      backgroundColor: theme.bg === Colors.light.background ? '#ffffff' : '#1e293b',
+    },
+    modalButton: {
+      flex: 1,
+      height: resp.vertical(52),
+      borderRadius: resp.horizontalScale(12),
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    modalCancelButton: {
+      borderWidth: 1.5,
+      borderColor: '#94a3b8',
+      backgroundColor: 'transparent',
+    },
+    modalCancelButtonText: {
+      color: '#64748b',
+      fontSize: resp.fontSize(16),
+      fontWeight: '600',
+      letterSpacing: 0.2,
+    },
+    modalAddButton: {
+      backgroundColor: theme.tint,
+      shadowColor: theme.tint,
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.3,
+      shadowRadius: 8,
+      elevation: 6,
+    },
+    modalAddButtonText: {
+      color: '#ffffff',
+      fontSize: resp.fontSize(16),
+      fontWeight: '600',
+      letterSpacing: 0.3,
+    },
+    modalCloseBtn: {
+      width: resp.horizontalScale(40),
+      height: resp.horizontalScale(40),
+      borderRadius: resp.horizontalScale(20),
+      backgroundColor: theme.bg === Colors.light.background ? '#f1f5f9' : '#334155',
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    modalForm: {
+      gap: resp.vertical(16),
+      paddingBottom: resp.vertical(20),
+    },
+    // Product search styles
+    searchLoader: {
+      position: 'absolute',
+      right: resp.horizontalScale(12),
+      top: '50%',
+      transform: [{ translateY: -12 }],
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    suggestionsContainer: {
+      position: 'absolute',
+      top: resp.vertical(48),
+      left: 0,
+      right: 0,
+      maxHeight: resp.vertical(200),
+      backgroundColor: theme.bg === Colors.light.background ? '#ffffff' : '#1e293b',
+      borderWidth: 1,
+      borderColor: theme.bg === Colors.light.background ? '#e2e8f0' : '#475569',
+      borderRadius: resp.horizontalScale(10),
+      borderTopLeftRadius: 0,
+      borderTopRightRadius: 0,
+      zIndex: 1000,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 4 },
+      shadowOpacity: 0.15,
+      shadowRadius: 8,
+      elevation: 8,
+    },
+    suggestionsList: {
+      maxHeight: resp.vertical(200),
+    },
+    suggestionItem: {
+      paddingVertical: resp.vertical(12),
+      paddingHorizontal: resp.horizontalScale(16),
+      borderBottomWidth: 0.5,
+      borderBottomColor: theme.bg === Colors.light.background ? '#f1f5f9' : '#334155',
+      backgroundColor: theme.bg === Colors.light.background ? '#ffffff' : '#1e293b',
+    },
+    suggestionText: {
+      fontSize: resp.fontSize(15),
+      fontWeight: '400',
+      letterSpacing: -0.1,
     },
   });
