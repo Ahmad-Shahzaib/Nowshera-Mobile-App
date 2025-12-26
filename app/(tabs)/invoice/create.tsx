@@ -743,7 +743,7 @@ export default function CreateInvoice() {
           placeholderTextColor={icon}
           keyboardType="numeric"
         /> */}
-        <Text style={[stylesLocal.tableCell, stylesLocal.tableCellPrice]}>{product.price}</Text>
+        {/* <Text style={[stylesLocal.tableCell, stylesLocal.tableCellPrice]}>{product.price}</Text> */}
         <View style={stylesLocal.actionCell}>
           <TouchableOpacity
             onPress={() => onEdit(product)}
@@ -815,20 +815,20 @@ export default function CreateInvoice() {
             {payment.account || 'Select Account'}
           </Text>
         </TouchableOpacity>
-        <TextInput
+        {/* <TextInput
           style={[stylesLocal.tableCell, stylesLocal.tableCellMedium]}
           value={payment.date}
           onChangeText={(value) => onUpdate(payment.id, 'date', value)}
           placeholder="Date"
           placeholderTextColor={icon}
-        />
-        <TextInput
+        /> */}
+        {/* <TextInput
           style={[stylesLocal.tableCell, stylesLocal.tableCellMedium]}
           value={payment.reference}
           onChangeText={(value) => onUpdate(payment.id, 'reference', value)}
           placeholder="Reference"
           placeholderTextColor={icon}
-        />
+        /> */}
         <TouchableOpacity
           onPress={() => onRemove(payment.id)}
           style={stylesLocal.tableDeleteBtn}
@@ -1377,7 +1377,7 @@ export default function CreateInvoice() {
                     <View style={stylesLocal.tableHeader}>
                       <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellIndex]}>#</Text>
                       <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellSmall]}>Qty</Text>
-                      <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellMedium]}>Rate</Text>
+                      {/* <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellMedium]}>Rate</Text> */}
                       <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellPrice]}>Amount</Text>
                       <Text style={[stylesLocal.tableHeaderCell, { flex: 0.8, textAlign: 'center' }]}>Action</Text>
                     </View>
@@ -1435,8 +1435,8 @@ export default function CreateInvoice() {
                       <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellIndex]}>#</Text>
                       <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellMedium]}>Amount</Text>
                       <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellAccount]}>Account</Text>
-                      <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellMedium]}>Date</Text>
-                      <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellMedium]}>Reference</Text>
+                      {/* <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellMedium]}>Date</Text> */}
+                      <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellMedium]}>Action</Text>
                       <View style={{ width: resp.horizontalScale(32) }} />
                     </View>
 

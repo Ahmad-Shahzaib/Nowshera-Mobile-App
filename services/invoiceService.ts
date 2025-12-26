@@ -385,6 +385,8 @@ export const invoiceService = {
         quantity: number;
         price: number;
         description: string;
+        discount?: number;
+        tax?: number;
       }>;
       payments: Array<{
         date: string;
@@ -467,15 +469,97 @@ export const invoiceService = {
         }
       } else {
         // Offline mode - save to local DB
-        console.log(`[invoiceService] Offline mode - saving to local DB`);
-        // TODO: Implement local DB update if needed
-        return {
-          success: false,
-          message: 'Update requires internet connection',
-          total: 0,
-          paid: 0,
-          due: 0,
-        };
+        console.log(`[invoiceService] Offline mode - updating local DB`);
+        
+        try {
+          // Get the local invoice (try by id or serverId)
+          let localInvoice = await localDB.getInvoiceById(invoiceId.toString());
+          
+          if (!localInvoice) {
+            // Try to find by serverId if not found by id
+            const allInvoices = await localDB.getInvoices();
+            localInvoice = allInvoices.find(inv => inv.serverId === invoiceId.toString()) || null;
+          }
+          
+          if (!localInvoice) {
+            return {
+              success: false,
+              message: `Invoice ${invoiceId} not found`,
+              total: 0,
+              paid: 0,
+              due: 0,
+            };
+          }
+          
+          // Calculate totals from items
+          const itemSubTotal = updateData.items.reduce((sum, item) => sum + (item.quantity * item.price), 0);
+          const itemDiscountTotal = updateData.items.reduce((sum, item) => sum + (item.discount || 0), 0);
+          const itemTaxTotal = updateData.items.reduce((sum, item) => sum + (item.tax || 0), 0);
+          const grandTotal = itemSubTotal - itemDiscountTotal + itemTaxTotal;
+          
+          // Calculate paid amount from payments
+          const paidAmount = updateData.payments.reduce((sum, payment) => sum + payment.amount, 0);
+          const dueAmount = grandTotal - paidAmount;
+          
+          // Update invoice in local DB
+          await localDB.updateInvoice(localInvoice.id, {
+            issueDate: updateData.issue_date,
+            dueDate: updateData.due_date,
+            warehouseId: updateData.warehouse_id.toString(),
+            subTotal: itemSubTotal.toString(),
+            discountTotal: itemDiscountTotal.toString(),
+            taxTotal: itemTaxTotal.toString(),
+            grandTotal: grandTotal.toString(),
+            dueAmount: dueAmount.toString(),
+            synced: 0, // Mark as unsynced for later sync
+          });
+          
+          // Delete old items and payments
+          await localDB.deleteInvoiceItems(localInvoice.id);
+          await localDB.deleteInvoicePayments(localInvoice.id);
+          
+          // Add new items
+          for (const item of updateData.items) {
+            await localDB.addInvoiceItem({
+              invoiceId: localInvoice.id,
+              productId: item.id,
+              quantity: item.quantity,
+              price: item.price,
+              description: item.description,
+            });
+          }
+          
+          // Add new payments
+          for (const payment of updateData.payments) {
+            await localDB.addInvoicePayment({
+              invoiceId: localInvoice.id,
+              amount: payment.amount,
+              accountId: payment.account_id,
+              paymentMethod: payment.payment_method,
+              date: payment.date,
+              reference: payment.reference,
+            });
+          }
+          
+          console.log(`[invoiceService] Invoice ${invoiceId} updated locally (marked for sync)`);
+          
+          return {
+            success: true,
+            message: 'Invoice updated (will sync when online)',
+            total: grandTotal,
+            paid: paidAmount,
+            due: dueAmount,
+          };
+        } catch (error: any) {
+          console.error(`[invoiceService] Offline update failed:`, error.message);
+          return {
+            success: false,
+            message: error.message || 'Failed to update invoice offline',
+            total: 0,
+            paid: 0,
+            due: 0,
+          };
+        }
       }
     } catch (error: any) {
       console.error('[invoiceService] Error updating invoice:', error);
@@ -685,7 +769,7 @@ export const invoiceService = {
         payments: payments.map(payment => ({
           id: payment.id ? parseInt(payment.id) : 0,
           date: payment.date,
-          amount: payment.amount.toString(),
+          amount: (typeof payment.amount === 'string' ? payment.amount : payment.amount.toString()),
           account_id: payment.accountId || 0,
           payment_method: payment.paymentMethod || 1,
           reference: payment.reference || '',

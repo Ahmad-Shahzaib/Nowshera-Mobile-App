@@ -24,7 +24,7 @@ export default function TabLayout() {
 
   return (
     <TabProvider>
-      <View style={{ flex: 1 }}>
+      <View style={{ flex: 1, paddingBottom: 20 }}>
         {/* Only show TopBar when not on profile or social screen */}
         {/* {!isSocialScreen && (
           <TopBar

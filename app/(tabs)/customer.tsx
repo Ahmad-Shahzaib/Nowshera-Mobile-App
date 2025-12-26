@@ -44,6 +44,7 @@ export default function Customers() {
       setError(null);
       
       const data = await customerService.getAllCustomers();
+      console.log('Fetched customers:', data); // Debug: Check if balance is included
       setCustomers(data);
     } catch (err: any) {
       console.error('Error fetching customers:', err);
@@ -427,7 +428,7 @@ const styles = StyleSheet.create({
   },
   balanceBlock: { alignItems: 'flex-end', marginBottom: 8 },
   smallLabel: { color: '#8f9598', fontSize: 11 },
-  balance: { fontSize: 14 },
+  balance: { fontSize: 14, fontWeight: '600', color: '#10b981' },
   actions: { flexDirection: 'row', marginTop: 8 },
   iconBtn: {
     width: 36,
