@@ -160,6 +160,9 @@ export default function EditInvoice() {
   // Product modal mode: 'add' or 'edit'
   const [productModalMode, setProductModalMode] = useState<'add' | 'edit'>('add');
 
+  // Product editing ID tracker
+  const [editingProductId, setEditingProductId] = useState<string | null>(null);
+
   // Product search state
   const [productSearchQuery, setProductSearchQuery] = useState('');
   const [productSuggestions, setProductSuggestions] = useState<any[]>([]);
@@ -197,6 +200,28 @@ export default function EditInvoice() {
       loadCategories();
     }
   }, [id]);
+
+  // Auto-select category and warehouse after dynamic data is loaded
+  useEffect(() => {
+    if (loading || !categoryId || !categories.length) return;
+    
+    const matchedCategory = categories.find(cat => cat.id === categoryId);
+    if (matchedCategory) {
+      setSelectedCategory(matchedCategory.name);
+      console.log('[EditInvoice] Auto-selected category:', matchedCategory.name);
+    }
+  }, [categories, categoryId, loading]);
+
+  // Auto-select warehouse after dynamic data is loaded
+  useEffect(() => {
+    if (loading || !warehouseId || !warehouses.length) return;
+    
+    const matchedWarehouse = warehouses.find(wh => wh.id === warehouseId);
+    if (matchedWarehouse) {
+      setSelectedWarehouse(matchedWarehouse.name);
+      console.log('[EditInvoice] Auto-selected warehouse:', matchedWarehouse.name);
+    }
+  }, [warehouses, warehouseId, loading]);
 
   // Function to load warehouses dynamically
   const loadWarehouses = async () => {
@@ -347,19 +372,13 @@ export default function EditInvoice() {
         setReferenceNumber(invoice.ref_number || '');
         setMasterDiscount(invoice.discount_apply?.toString() || '0');
         
-        // Set category from mapping
+        // Set category ID (will be auto-selected once categories load)
         const categoryId = invoice.category_id || null;
         setCategoryId(categoryId);
-        if (categoryId) {
-          setSelectedCategory(CATEGORY_MAP[categoryId] || null);
-        }
         
-        // Set warehouse from mapping
+        // Set warehouse ID (will be auto-selected once warehouses load)
         const warehouseId = invoice.warehouse_id || null;
         setWarehouseId(warehouseId);
-        if (warehouseId) {
-          setSelectedWarehouse(WAREHOUSE_MAP[warehouseId] || null);
-        }
         setCustomerType('customer');
         setStockType('send-now');
         
@@ -456,50 +475,33 @@ export default function EditInvoice() {
   }, []);
 
   const editProduct = useCallback((product: ProductItem) => {
-    // Load product into temp and show bottom sheet
+    // Set the product to edit
     setTempProduct(product);
-    setProductModalMode('edit');
+    setEditingProductId(product.id);
+    // Open bottom sheet
     addProductBottomSheetRef.current?.snapToIndex(0);
   }, []);
 
   const confirmAddProduct = useCallback(() => {
     // Validate required fields
-    if (!tempProduct.description.trim()) {
-      Alert.alert('Error', 'Please enter product description');
+    if (!tempProduct.product.trim()) {
+      Alert.alert('Error', 'Please enter product name');
       return;
     }
 
-    if (!tempProduct.quantity || parseFloat(tempProduct.quantity) <= 0) {
-      Alert.alert('Error', 'Please enter valid quantity');
-      return;
-    }
+    console.log('[EditInvoice] Adding/Editing product:', tempProduct);
 
-    if (!tempProduct.rate || parseFloat(tempProduct.rate) <= 0) {
-      Alert.alert('Error', 'Please enter valid rate/price');
-      return;
-    }
-
-    if (productModalMode === 'add') {
-      // Add the product to the list
-      setProducts(prev => [...prev, { ...tempProduct, id: Date.now().toString() }]);
-    } else {
+    if (editingProductId) {
       // Update existing product
-      setProducts(prevProducts => prevProducts.map(product =>
-        product.id === tempProduct.id ? tempProduct : product
-      ));
+      setProducts(prev => prev.map(p => p.id === editingProductId ? tempProduct : p));
+      setEditingProductId(null);
+    } else {
+      // Add new product
+      setProducts(prev => [...prev, { ...tempProduct, id: tempProduct.id || Date.now().toString() }]);
     }
 
-    // Reset search state
-    setProductSearchQuery('');
-    setShowProductSuggestions(false);
-
-    // Dismiss keyboard and close bottom sheet
-    Keyboard.dismiss();
-    setTimeout(() => {
-      addProductBottomSheetRef.current?.close();
-    }, 100);
-
-    // Reset temp product
+    // Close bottom sheet and reset temp product
+    addProductBottomSheetRef.current?.close();
     setTempProduct({
       id: '',
       product: '',
@@ -512,7 +514,7 @@ export default function EditInvoice() {
       price: '0',
       purchase_price: '0',
     });
-  }, [tempProduct, productModalMode]);
+  }, [tempProduct, editingProductId]);
 
   const updateTempProduct = useCallback((field: keyof ProductItem, value: string) => {
     setTempProduct(prev => {
@@ -801,14 +803,14 @@ export default function EditInvoice() {
           placeholderTextColor={icon}
           keyboardType="numeric"
         />
-        <TextInput
+        {/* <TextInput
           style={[stylesLocal.tableCell, stylesLocal.tableCellFlexMedium]}
           value={product.rate}
           onChangeText={(value) => onUpdate(product.id, 'rate', value)}
           placeholder="Rate"
           placeholderTextColor={icon}
           keyboardType="numeric"
-        />
+        /> */}
         <Text style={[stylesLocal.tableCell, stylesLocal.tableCellFlexPrice]}>{product.price}</Text>
         <View style={stylesLocal.tableActionsCell}>
           <TouchableOpacity
@@ -841,10 +843,10 @@ export default function EditInvoice() {
         onUpdate={updateProduct}
         onEdit={editProduct}
         onRemove={removeProduct}
-        canRemove={products.length > 1}
+        canRemove={true}
       />
     );
-  }, [updateProduct, editProduct, removeProduct, products.length]);
+  }, [updateProduct, editProduct, removeProduct]);
 
   // Key extractor for FlatList
   const keyExtractor = useCallback((item: ProductItem) => item.id, []);
@@ -889,7 +891,7 @@ export default function EditInvoice() {
         <Text style={[stylesLocal.tableCell, stylesLocal.tableCellIndex]}>{index + 1}</Text>
         <Text style={[stylesLocal.tableCell, stylesLocal.tableCellFlexSmall]}>{payment.amount}</Text>
         <Text style={[stylesLocal.tableCell, stylesLocal.tableCellFlexMedium]} numberOfLines={1}>{payment.account || 'Select'}</Text>
-        <Text style={[stylesLocal.tableCell, stylesLocal.tableCellFlexSmall]}>{payment.date}</Text>
+        {/* <Text style={[stylesLocal.tableCell, stylesLocal.tableCellFlexSmall]}>{payment.date}</Text> */}
         <View style={stylesLocal.tableActionsCell}>
           <TouchableOpacity
             onPress={() => onEdit(payment)}
@@ -920,10 +922,10 @@ export default function EditInvoice() {
         index={index}
         onEdit={editPayment}
         onRemove={removePayment}
-        canRemove={paymentDetails.length > 1}
+        canRemove={true}
       />
     );
-  }, [editPayment, removePayment, paymentDetails.length]);
+  }, [editPayment, removePayment]);
 
   // Payment key extractor
   const paymentKeyExtractor = useCallback((item: PaymentDetail) => item.id, []);
@@ -1306,7 +1308,7 @@ export default function EditInvoice() {
               <View style={stylesLocal.tableHeader}>
                 <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellIndex]}>#</Text>
                 <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexSmall]}>Qty</Text>
-                <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexMedium]}>Rate</Text>
+                {/* <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexMedium]}>Rate</Text> */}
                 <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexPrice]}>Amount</Text>
                 <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableActionsHeader]}>Action</Text>
               </View>
@@ -1341,7 +1343,7 @@ export default function EditInvoice() {
                 <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellIndex]}>#</Text>
                 <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexSmall]}>Amount</Text>
                 <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexMedium]}>Account</Text>
-                <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexSmall]}>Date</Text>
+                {/* <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexSmall]}>Date</Text> */}
                 <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableActionsHeader]}>Action</Text>
               </View>
               <FlatList
@@ -2280,6 +2282,7 @@ const createStyles = (resp: ReturnType<typeof useResponsive>, theme: { bg: strin
     // Responsive flex-based table cells for mobile
     tableCellFlexSmall: {
       flex: 0.6,
+      margin: resp.horizontalScale(4),
       fontWeight: '500',
     },
     tableCellFlexMedium: {
