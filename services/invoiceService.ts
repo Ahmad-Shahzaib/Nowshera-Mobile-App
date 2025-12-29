@@ -109,12 +109,38 @@ export const invoiceService = {
             const total = response.data.pagination?.total || apiInvoices.length;
             const totalPages = response.data.pagination?.last_page || Math.ceil(total / perPage);
             
-            return {
-              invoices,
-              total,
-              currentPage: page,
-              totalPages
-            };
+            // Also include any local unsynced invoices so offline-created invoices
+            // remain visible when the app is online (unsynced items should appear first).
+            try {
+              const unsyncedLocalRows = await localDB.getUnsyncedInvoices();
+              const unsyncedInvoices = unsyncedLocalRows
+                // map DB rows to Invoice objects
+                .map(localRowToInvoice)
+                // filter out any that might accidentally match server-side invoices
+                .filter(u => !invoices.some(a => (a.serverId && u.serverId) ? a.serverId === u.serverId : a.invoiceNo === u.invoiceNo));
+
+              if (unsyncedInvoices.length > 0) {
+                console.log(`[invoiceService] Merging ${unsyncedInvoices.length} local unsynced invoices into API results`);
+              }
+
+              const merged = [...unsyncedInvoices, ...invoices];
+
+              return {
+                invoices: merged,
+                total: total + unsyncedInvoices.length,
+                currentPage: page,
+                totalPages
+              };
+            } catch (err) {
+              // If reading local DB fails for any reason, fall back to API-only response
+              console.error('[invoiceService] Failed to load unsynced local invoices:', err);
+              return {
+                invoices,
+                total,
+                currentPage: page,
+                totalPages
+              };
+            }
           } else {
             console.log('[invoiceService] API returned no invoices or status false');
             return {
@@ -411,12 +437,102 @@ export const invoiceService = {
 
       if (online) {
         try {
+          // Resolve whether the provided invoiceId maps to a server-side ID
+          let apiInvoiceId: string | number = invoiceId;
+
+          try {
+            const localAttempt = await localDB.getInvoiceById(invoiceId.toString());
+            if (localAttempt && localAttempt.serverId && /^\d+$/.test(String(localAttempt.serverId))) {
+              apiInvoiceId = localAttempt.serverId;
+              console.log(`[invoiceService] Resolved server invoice id ${apiInvoiceId} for local id ${invoiceId}`);
+            }
+          } catch (err) {
+            // ignore local DB lookup errors and proceed to use invoiceId as-is
+            console.warn('[invoiceService] Failed to resolve local invoice for server id lookup:', err);
+          }
+
+          // If invoiceId is not a numeric server id, perform the offline update flow
+          if (!/^[0-9]+$/.test(String(apiInvoiceId))) {
+            console.log(`[invoiceService] Invoice id ${invoiceId} does not have a server id - performing local update instead of API call`);
+            // Reuse the offline update branch (mark as unsynced)
+            // Get the local invoice (try by id or serverId)
+            let localInvoice = await localDB.getInvoiceById(invoiceId.toString());
+            if (!localInvoice) {
+              const allInvoices = await localDB.getInvoices();
+              localInvoice = allInvoices.find(inv => inv.serverId === invoiceId.toString()) || null;
+            }
+
+            if (!localInvoice) {
+              return {
+                success: false,
+                message: `Invoice ${invoiceId} not found locally`,
+                total: 0,
+                paid: 0,
+                due: 0,
+              };
+            }
+
+            // Perform local update (same logic as offline branch below)
+            const itemSubTotal = updateData.items.reduce((sum, item) => sum + (item.quantity * item.price), 0);
+            const itemDiscountTotal = updateData.items.reduce((sum, item) => sum + (item.discount || 0), 0);
+            const itemTaxTotal = updateData.items.reduce((sum, item) => sum + (item.tax || 0), 0);
+            const grandTotal = itemSubTotal - itemDiscountTotal + itemTaxTotal;
+            const paidAmount = updateData.payments.reduce((sum, payment) => sum + payment.amount, 0);
+            const dueAmount = grandTotal - paidAmount;
+
+            await localDB.updateInvoice(localInvoice.id, {
+              issueDate: updateData.issue_date,
+              dueDate: updateData.due_date,
+              warehouseId: updateData.warehouse_id.toString(),
+              subTotal: itemSubTotal.toString(),
+              discountTotal: itemDiscountTotal.toString(),
+              taxTotal: itemTaxTotal.toString(),
+              grandTotal: grandTotal.toString(),
+              dueAmount: dueAmount.toString(),
+              synced: 0,
+            });
+
+            await localDB.deleteInvoiceItems(localInvoice.id);
+            await localDB.deleteInvoicePayments(localInvoice.id);
+
+            for (const item of updateData.items) {
+              await localDB.addInvoiceItem({
+                invoiceId: localInvoice.id,
+                productId: item.id,
+                quantity: item.quantity,
+                price: item.price,
+                description: item.description,
+              });
+            }
+
+            for (const payment of updateData.payments) {
+              await localDB.addInvoicePayment({
+                invoiceId: localInvoice.id,
+                amount: payment.amount,
+                accountId: payment.account_id,
+                paymentMethod: payment.payment_method,
+                date: payment.date,
+                reference: payment.reference,
+              });
+            }
+
+            console.log(`[invoiceService] Invoice ${invoiceId} updated locally (marked for sync)`);
+
+            return {
+              success: true,
+              message: 'Invoice updated locally (will sync when possible)',
+              total: grandTotal,
+              paid: paidAmount,
+              due: dueAmount,
+            };
+          }
+
           const axios = getAxiosInstance();
           const response = await axios.put(
-            `/invoice/${invoiceId}/update`,
+            `/invoice/${apiInvoiceId}/update`,
             updateData
           );
-          
+
           console.log(`[invoiceService] API Response:`, response.data);
 
           // Ensure response.data exists and has the expected structure
@@ -432,12 +548,11 @@ export const invoiceService = {
           }
 
           if (response.data.success) {
-            console.log(`[invoiceService] Invoice ${invoiceId} updated successfully`);
-            // Safely extract numeric values with proper type checking
+            console.log(`[invoiceService] Invoice ${apiInvoiceId} updated successfully`);
             const total = typeof response.data.total === 'number' ? response.data.total : (typeof response.data.data?.total === 'number' ? response.data.data.total : 0);
             const paid = typeof response.data.paid === 'number' ? response.data.paid : (typeof response.data.data?.paid === 'number' ? response.data.data.paid : 0);
             const due = typeof response.data.due === 'number' ? response.data.due : (typeof response.data.data?.due === 'number' ? response.data.data.due : 0);
-            
+
             return {
               success: true,
               message: response.data.message || 'Invoice updated successfully',

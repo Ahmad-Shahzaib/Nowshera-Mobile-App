@@ -207,8 +207,8 @@ export default function Customers() {
       </View>
 
       {/* Sync Status Bar */}
-      <View style={styles.syncStatusBar}>
-        <View style={styles.statusLeft}>
+      <View >
+        {/* <View style={styles.statusLeft}>
           <View style={[styles.statusDot, { backgroundColor: isOnline ? '#10b981' : '#ef4444' }]} />
           <ThemedText style={styles.statusText}>
             {isOnline ? 'Online' : 'Offline'}
@@ -223,7 +223,7 @@ export default function Customers() {
           {isSyncing && (
             <ActivityIndicator size="small" color={Colors.light.tint} style={{ marginLeft: 8 }} />
           )}
-        </View>
+        </View> */}
         
         {unsyncedCount > 0 && isOnline && !isSyncing && (
           <TouchableOpacity 

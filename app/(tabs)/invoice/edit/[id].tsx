@@ -83,6 +83,9 @@ export default function EditInvoice() {
   // Refs for bottom sheets
   const addProductBottomSheetRef = useRef<BottomSheet>(null);
   const addPaymentBottomSheetRef = useRef<BottomSheet>(null);
+  const walkInNameRef = useRef<TextInput | null>(null);
+  const walkInContactRef = useRef<TextInput | null>(null);
+  const productNameRef = useRef<TextInput | null>(null);
 
   const stylesLocal = createStyles(resp, { bg, text, tint, icon });
 
@@ -134,8 +137,6 @@ export default function EditInvoice() {
     reference: '',
   });
 
-  // Payment snap points for bottom sheet
-  const paymentSnapPoints = useMemo(() => ['90%'], []);
 
   // Payment modal mode: 'add' or 'edit'
   const [paymentModalMode, setPaymentModalMode] = useState<'add' | 'edit'>('add');
@@ -154,8 +155,10 @@ export default function EditInvoice() {
     purchase_price: '0',
   });
 
-  // Product snap points for bottom sheet
-  const productSnapPoints = useMemo(() => ['90%'], []);
+  // Payment snap points for bottom sheet (use full height to remove top gap)
+  const paymentSnapPoints = useMemo(() => ['100%'], []);
+  // Product snap points for bottom sheet (use full height to remove top gap)
+  const productSnapPoints = useMemo(() => ['100%'], []);
 
   // Product modal mode: 'add' or 'edit'
   const [productModalMode, setProductModalMode] = useState<'add' | 'edit'>('add');
@@ -211,6 +214,15 @@ export default function EditInvoice() {
       console.log('[EditInvoice] Auto-selected category:', matchedCategory.name);
     }
   }, [categories, categoryId, loading]);
+
+  // If invoice has no categoryId, auto-select the first available category as a sensible default
+  useEffect(() => {
+    if (loading || categories.length === 0) return;
+    if (!categoryId && !selectedCategory && categories.length > 0) {
+      setSelectedCategory(categories[0].name);
+      console.log('[EditInvoice] Auto-selected default category:', categories[0].name);
+    }
+  }, [categories, categoryId, selectedCategory, loading]);
 
   // Auto-select warehouse after dynamic data is loaded
   useEffect(() => {
@@ -286,6 +298,49 @@ export default function EditInvoice() {
       console.error('[EditInvoice] Error loading categories:', error);
     }
   };
+
+  // Helper to show validation alert and focus the related field when OK is pressed
+  const showErrorAndFocus = useCallback((message: string, field?: string) => {
+    Alert.alert('Error', message, [
+      {
+        text: 'OK',
+        onPress: () => {
+          try {
+            switch (field) {
+              case 'customer':
+              case 'dealer':
+                setShowCustomerModal(true);
+                break;
+              case 'walkInName':
+                setTimeout(() => walkInNameRef.current?.focus(), 100);
+                break;
+              case 'walkInContact':
+                setTimeout(() => walkInContactRef.current?.focus(), 100);
+                break;
+              case 'category':
+                setShowCategoryModal(true);
+                break;
+              case 'warehouse':
+                setShowWarehouseModal(true);
+                break;
+              case 'product':
+                // open add-product sheet and focus product name input
+                addProductBottomSheetRef.current?.snapToIndex(0);
+                setTimeout(() => productNameRef.current?.focus(), 200);
+                break;
+              case 'payment':
+                addPaymentBottomSheetRef.current?.snapToIndex(0);
+                break;
+              default:
+                break;
+            }
+          } catch (e) {
+            console.warn('[EditInvoice] showErrorAndFocus failed to focus field', e);
+          }
+        }
+      }
+    ]);
+  }, []);
 
   // Search products with debouncing
   useEffect(() => {
@@ -666,38 +721,38 @@ export default function EditInvoice() {
   const handleUpdate = async () => {
     // Validate required fields
     if (customerType === 'customer' && !selectedCustomer) {
-      Alert.alert('Error', 'Please select a customer');
+      showErrorAndFocus('Please select a customer', 'customer');
       return;
     }
 
     if (customerType === 'walk-in') {
       if (!walkInCustomerName.trim()) {
-        Alert.alert('Error', 'Please enter customer name');
+        showErrorAndFocus('Please enter customer name', 'walkInName');
         return;
       }
       if (!walkInContactNumber.trim()) {
-        Alert.alert('Error', 'Please enter contact number');
+        showErrorAndFocus('Please enter contact number', 'walkInContact');
         return;
       }
     }
 
     if (customerType === 'dealers' && !selectedCustomer) {
-      Alert.alert('Error', 'Please select a dealer');
+      showErrorAndFocus('Please select a dealer', 'dealer');
       return;
     }
 
     if (!selectedCategory) {
-      Alert.alert('Error', 'Please select a category');
+      showErrorAndFocus('Please select a category', 'category');
       return;
     }
 
     if (!selectedWarehouse) {
-      Alert.alert('Error', 'Please select a warehouse');
+      showErrorAndFocus('Please select a warehouse', 'warehouse');
       return;
     }
 
     if (products.some(p => !p.product.trim())) {
-      Alert.alert('Error', 'Please fill in all product details');
+      showErrorAndFocus('Please fill in all product details', 'product');
       return;
     }
 
@@ -794,7 +849,9 @@ export default function EditInvoice() {
   }) => {
     return (
       <View style={stylesLocal.tableRow}>
-        <Text style={[stylesLocal.tableCell, stylesLocal.tableCellIndex]}>{index + 1}</Text>
+        <TouchableOpacity style={[stylesLocal.tableCell, stylesLocal.tableCellProduct]} onPress={() => onEdit(product)}>
+          <Text numberOfLines={1} style={{ color: icon }}>{product.product || 'Item'}</Text>
+        </TouchableOpacity>
         <TextInput
           style={[stylesLocal.tableCell, stylesLocal.tableCellFlexSmall]}
           value={product.quantity}
@@ -1173,6 +1230,7 @@ export default function EditInvoice() {
                     placeholderTextColor={icon}
                     value={walkInCustomerName}
                     onChangeText={setWalkInCustomerName}
+                    ref={walkInNameRef}
                   />
                 </View>
                 <View style={stylesLocal.halfWidth}>
@@ -1182,6 +1240,7 @@ export default function EditInvoice() {
                     placeholderTextColor={icon}
                     value={walkInContactNumber}
                     onChangeText={setWalkInContactNumber}
+                    ref={walkInContactRef}
                     keyboardType="phone-pad"
                   />
                 </View>
@@ -1306,7 +1365,7 @@ export default function EditInvoice() {
 
             <View style={stylesLocal.productsContainer}>
               <View style={stylesLocal.tableHeader}>
-                <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellIndex]}>#</Text>
+                <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellProduct]}>Product</Text>
                 <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexSmall]}>Qty</Text>
                 {/* <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexMedium]}>Rate</Text> */}
                 <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellFlexPrice]}>Amount</Text>
@@ -1497,6 +1556,7 @@ export default function EditInvoice() {
                         setShowProductSuggestions(true);
                       }
                     }}
+                    ref={productNameRef}
                   />
                   {isSearchingProducts && (
                     <View style={stylesLocal.searchLoader}>

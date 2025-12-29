@@ -69,9 +69,9 @@ export default function CreateInvoice() {
   const addProductBottomSheetRef = useRef<BottomSheet>(null);
   const addPaymentBottomSheetRef = useRef<BottomSheet>(null);
 
-  // Bottom sheet snap points
-  const productSnapPoints = useMemo(() => ['90%'], []);
-  const paymentSnapPoints = useMemo(() => ['90%'], []);
+  // Bottom sheet snap points (use full height to remove top gap)
+  const productSnapPoints = useMemo(() => ['100%'], []);
+  const paymentSnapPoints = useMemo(() => ['100%'], []);
 
   const stylesLocal = createStyles(resp, { bg, text, tint, icon });
 
@@ -238,8 +238,8 @@ export default function CreateInvoice() {
         setInvoiceNumberDisabled(false);
       }
     } catch (error) {
-      console.error('[CreateInvoice] Error fetching invoice number:', error);
-      Alert.alert('Error', 'Failed to fetch invoice number. Please enter manually.');
+      // console.error('[CreateInvoice] Error fetching invoice number:', error);
+      // Alert.alert('Error', 'Failed to fetch invoice number. Please enter manually.');
       setInvoiceNumberDisabled(false);
     } finally {
       setIsLoadingInvoiceNumber(false);
@@ -259,6 +259,14 @@ export default function CreateInvoice() {
     };
     loadCategories();
   }, []);
+
+  // Auto-select category when categories are loaded (if none selected)
+  useEffect(() => {
+    if (!selectedCategory && categories && categories.length > 0) {
+      setSelectedCategory(categories[0].id.toString());
+      console.log('[CreateInvoice] Auto-selected category:', categories[0].id, categories[0].name);
+    }
+  }, [categories, selectedCategory]);
 
   // Load warehouses and bank accounts on mount
   useEffect(() => {
@@ -283,6 +291,20 @@ export default function CreateInvoice() {
     loadWarehouses();
     loadBankAccounts();
   }, []);
+
+  // Auto-select warehouse when warehouses load (if none selected)
+  useEffect(() => {
+    if (!selectedWarehouse && warehouses && warehouses.length > 0) {
+      setSelectedWarehouse(warehouses[0]);
+      console.log('[CreateInvoice] Auto-selected warehouse:', warehouses[0]);
+      // Fetch invoice number for the auto-selected warehouse
+      try {
+        fetchNextInvoiceNumber(warehouses[0].id);
+      } catch (err) {
+        console.error('[CreateInvoice] Failed to fetch invoice number for auto-selected warehouse:', err);
+      }
+    }
+  }, [warehouses, selectedWarehouse]);
 
   // Filter bank accounts when warehouse changes
   useEffect(() => {
@@ -718,7 +740,9 @@ export default function CreateInvoice() {
   }) => {
     return (
       <View style={stylesLocal.tableRow}>
-        <Text style={[stylesLocal.tableCell, stylesLocal.tableCellIndex]}>{index + 1}</Text>
+        <TouchableOpacity style={[stylesLocal.tableCell, stylesLocal.tableCellProduct]} onPress={() => onEdit(product)}>
+          <Text numberOfLines={1} style={{ color: icon }}>{product.product || 'Item'}</Text>
+        </TouchableOpacity>
         <TextInput
           style={[stylesLocal.tableCell, stylesLocal.tableCellSmall]}
           value={product.quantity}
@@ -1375,7 +1399,7 @@ export default function CreateInvoice() {
                   <View>
                     {/* Table Header */}
                     <View style={stylesLocal.tableHeader}>
-                      <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellIndex]}>#</Text>
+                      <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellProduct]}>Product</Text>
                       <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellSmall]}>Qty</Text>
                       {/* <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellMedium]}>Rate</Text> */}
                       <Text style={[stylesLocal.tableHeaderCell, stylesLocal.tableCellPrice]}>Amount</Text>

@@ -6,6 +6,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useRouter } from 'expo-router';
 import React, { useState } from 'react';
 import {
+    Image,
     KeyboardAvoidingView,
     Platform,
     SafeAreaView,
@@ -80,12 +81,19 @@ export default function LoginScreen() {
                             },
                         ]}
                     >
+                         <Image
+                            source={{ uri: 'https://photo-cdn.urdupoint.com/show_img_new/business/directory/2021/200x140/pic_596de_1615268274.jpg._2' }}
+                            style={{ width: width * 0.4, height: width * 0.4, alignSelf: 'center', marginBottom: vertical(12) }}
+                            resizeMode="contain"
+                        />
                         <Text style={[styles.title, { color: theme.text, fontSize: fontSize(30) }]}>
                             Welcome Back 👋
                         </Text>
                         <Text style={[styles.subtitle, { color: theme.icon, fontSize: fontSize(15) }]}>
                             Please sign in to continue
                         </Text>
+
+                       
 
                         <View style={{ marginTop: vertical(8) }}>
                             <View style={{ marginBottom: vertical(18) }}>
