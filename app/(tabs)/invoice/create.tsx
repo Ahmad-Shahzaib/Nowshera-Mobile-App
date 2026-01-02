@@ -135,6 +135,9 @@ export default function CreateInvoice() {
   const [productSuggestions, setProductSuggestions] = useState<Product[]>([]);
   const [showProductSuggestions, setShowProductSuggestions] = useState(false);
   const [isSearchingProducts, setIsSearchingProducts] = useState(false);
+  // Inline add form toggle (show small inline form instead of opening bottom sheet)
+  // Keep inline form visible by default per user's request
+  const [showInlineAdd, setShowInlineAdd] = useState(true);
 
   // Categories state
   const [categories, setCategories] = useState<Category[]>([]);
@@ -398,6 +401,51 @@ export default function CreateInvoice() {
     addProductBottomSheetRef.current?.snapToIndex(0);
   }, []);
 
+  // Confirm add product when using inline form (not bottom sheet)
+  const confirmAddProductInline = useCallback(() => {
+    if (!tempProduct.product.trim()) {
+      Alert.alert('Error', 'Please enter product name');
+      return;
+    }
+
+    // compute final price to ensure quantity/rate are applied
+    const qty = parseFloat(tempProduct.quantity) || 0;
+    const rate = parseFloat(tempProduct.rate) || 0;
+    const discount = parseFloat(tempProduct.discount) || 0;
+    const subtotal = qty * rate;
+    const discountAmount = (subtotal * discount) / 100;
+    const finalPrice = (subtotal - discountAmount).toFixed(2);
+
+    if (editingProductId) {
+      setProducts(prev => prev.map(p => p.id === editingProductId ? { ...tempProduct, price: finalPrice } : p));
+      setEditingProductId(null);
+    } else {
+      setProducts(prev => [{ ...tempProduct, id: tempProduct.id || Date.now().toString(), price: finalPrice }, ...prev]);
+    }
+
+    // Reset inline form and hide it
+    // Prepare a fresh temp product for next entry but keep inline form visible
+    setTempProduct({
+      id: Date.now().toString(),
+      product: '',
+      shop: '',
+      quantity: '1',
+      rate: '0',
+      discount: '0',
+      tax: '0',
+      description: '',
+      price: '0',
+      purchase_price: '0',
+    });
+    setProductSearchQuery('');
+    setShowProductSuggestions(false);
+  }, [tempProduct, editingProductId]);
+
+  // Header add button handler: always attempt to add the current inline item
+  const handleHeaderAddPress = useCallback(() => {
+    confirmAddProductInline();
+  }, [confirmAddProductInline]);
+
   const confirmAddProduct = useCallback(() => {
     // Validate required fields
     if (!tempProduct.product.trim()) {
@@ -407,13 +455,21 @@ export default function CreateInvoice() {
 
     console.log('[CreateInvoice] Adding/Editing product:', tempProduct);
 
+    // compute final price to ensure quantity/rate/discount are applied
+    const qty = parseFloat(tempProduct.quantity) || 0;
+    const rate = parseFloat(tempProduct.rate) || 0;
+    const discount = parseFloat(tempProduct.discount) || 0;
+    const subtotal = qty * rate;
+    const discountAmount = (subtotal * discount) / 100;
+    const finalPrice = (subtotal - discountAmount).toFixed(2);
+
     if (editingProductId) {
-      // Update existing product
-      setProducts(prev => prev.map(p => p.id === editingProductId ? tempProduct : p));
+      // Update existing product with computed price
+      setProducts(prev => prev.map(p => p.id === editingProductId ? { ...tempProduct, price: finalPrice } : p));
       setEditingProductId(null);
     } else {
-      // Add new product
-      setProducts(prev => [...prev, { ...tempProduct, id: tempProduct.id || Date.now().toString() }]);
+      // Add new product with computed price (prepend so newest appears first)
+      setProducts(prev => [{ ...tempProduct, id: tempProduct.id || Date.now().toString(), price: finalPrice }, ...prev]);
     }
 
     // Close bottom sheet and reset temp product
@@ -467,7 +523,17 @@ export default function CreateInvoice() {
     });
   }, []);
 
+  const tempProductAmount = React.useMemo(() => {
+    const qty = parseFloat(tempProduct.quantity) || 0;
+    const rate = parseFloat(tempProduct.rate) || 0;
+    const discount = parseFloat(tempProduct.discount) || 0;
+    const subtotal = qty * rate;
+    const discountAmount = (subtotal * discount) / 100;
+    return (subtotal - discountAmount).toFixed(2);
+  }, [tempProduct.quantity, tempProduct.rate, tempProduct.discount]);
+
   const updateProduct = useCallback((id: string, field: keyof ProductItem, value: string) => {
+    console.log('[CreateInvoice] updateProduct called:', { id, field, value });
     setProducts(prevProducts => prevProducts.map(product => {
       if (product.id === id) {
         const updated = { ...product, [field]: value };
@@ -747,18 +813,21 @@ export default function CreateInvoice() {
           style={[stylesLocal.tableCell, stylesLocal.tableCellSmall]}
           value={product.quantity}
           onChangeText={(value) => onUpdate(product.id, 'quantity', value)}
+          onEndEditing={(e) => onUpdate(product.id, 'quantity', e.nativeEvent.text)}
           placeholder="Qty"
           placeholderTextColor={icon}
           keyboardType="numeric"
         />
-        <TextInput
+        {/* <TextInput
           style={[stylesLocal.tableCell, stylesLocal.tableCellMedium]}
           value={product.rate}
           onChangeText={(value) => onUpdate(product.id, 'rate', value)}
+          onEndEditing={(e) => onUpdate(product.id, 'rate', e.nativeEvent.text)}
           placeholder="Price"
           placeholderTextColor={icon}
           keyboardType="numeric"
-        />
+        /> */}
+        {/* Discount (optional) */}
         {/* <TextInput
           style={[stylesLocal.tableCell, stylesLocal.tableCellSmall]}
           value={product.discount}
@@ -767,7 +836,8 @@ export default function CreateInvoice() {
           placeholderTextColor={icon}
           keyboardType="numeric"
         /> */}
-        {/* <Text style={[stylesLocal.tableCell, stylesLocal.tableCellPrice]}>{product.price}</Text> */}
+        {/* Amount (computed) */}
+        <Text style={[stylesLocal.tableCell, stylesLocal.tableCellPrice]}>{product.price} Rs.</Text>
         <View style={stylesLocal.actionCell}>
           <TouchableOpacity
             onPress={() => onEdit(product)}
@@ -1376,12 +1446,93 @@ export default function CreateInvoice() {
                 </ThemedText>
                 <TouchableOpacity
                   style={stylesLocal.addButton}
-                  onPress={addProduct}
+                  onPress={handleHeaderAddPress}
                 >
-                  <MaterialIcons name="add" size={resp.fontSize(16)} color="#fff" />
-                  <Text style={stylesLocal.addButtonText}>Add Item</Text>
+                  <MaterialIcons name={showInlineAdd ? "check" : "add"} size={resp.fontSize(16)} color="#fff" />
+                  <Text style={stylesLocal.addButtonText}>{showInlineAdd ? 'Add Item' : 'Add Item'}</Text>
                 </TouchableOpacity>
               </View>
+
+              {/* Inline add form (compact) */}
+              {showInlineAdd && (
+                <View style={[stylesLocal.productCard, { marginBottom: resp.vertical(12) }]}> 
+                  <View style={{ flexDirection: 'row', gap: resp.horizontalScale(8), alignItems: 'center' }}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={stylesLocal.formLabel}>Items*</Text>
+                      <View style={{ position: 'relative' }}>
+                        <TextInput
+                          style={stylesLocal.formInput}
+                          placeholder="Search items..."
+                          placeholderTextColor={icon}
+                          value={productSearchQuery || tempProduct.product}
+                          onChangeText={(value) => {
+                            setProductSearchQuery(value);
+                            updateTempProduct('product', value);
+                            if (value.trim()) setShowProductSuggestions(true);
+                          }}
+                          onFocus={() => { if (productSuggestions.length > 0) setShowProductSuggestions(true); }}
+                        />
+                        {isSearchingProducts && (
+                          <View style={stylesLocal.searchLoader}>
+                            <Text style={{ color: icon, fontSize: resp.fontSize(12) }}>Searching...</Text>
+                          </View>
+                        )}
+                        {showProductSuggestions && productSuggestions.length > 0 && (
+                          <View style={stylesLocal.suggestionsContainer}>
+                            <ScrollView style={stylesLocal.suggestionsList} nestedScrollEnabled>
+                              {productSuggestions.map((item) => (
+                                <TouchableOpacity key={item.id.toString()} style={stylesLocal.suggestionItem} onPress={() => selectProductFromSuggestions(item)}>
+                                  <Text style={[stylesLocal.suggestionText, { color: text }]}>{item.label}</Text>
+                                </TouchableOpacity>
+                              ))}
+                            </ScrollView>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+
+                    <View style={{ width: resp.horizontalScale(72) }}>
+                      <Text style={stylesLocal.formLabel}>Quantity*</Text>
+                      <TextInput
+                        style={stylesLocal.formInput}
+                        value={tempProduct.quantity}
+                        onChangeText={(value) => updateTempProduct('quantity', value)}
+                        placeholder="Qty"
+                        placeholderTextColor={icon}
+                        keyboardType="numeric"
+                      />
+                    </View>
+
+                    <View style={{ width: resp.horizontalScale(100) }}>
+                      <Text style={stylesLocal.formLabel}>Price*</Text>
+                      <TextInput
+                        style={stylesLocal.formInput}
+                        value={tempProduct.rate}
+                        onChangeText={(value) => updateTempProduct('rate', value)}
+                        placeholder="Price"
+                        placeholderTextColor={icon}
+                        keyboardType="numeric"
+                      />
+                    </View>
+                  </View>
+
+                  <View style={{ marginTop: resp.vertical(8) }}>
+                    <Text style={stylesLocal.formLabel}>Description</Text>
+                    <TextInput
+                      style={[stylesLocal.formInput, { height: resp.vertical(64), textAlignVertical: 'top' }]}
+                      value={tempProduct.description}
+                      onChangeText={(v) => updateTempProduct('description', v)}
+                      placeholder="Description"
+                      placeholderTextColor={icon}
+                      multiline
+                    />
+                  </View>
+                  <View style={[stylesLocal.priceRow, { marginTop: resp.vertical(10) }]}> 
+                    <Text style={stylesLocal.priceLabel}>Amount:</Text>
+                    <Text style={stylesLocal.priceValue}>{tempProductAmount} Rs.</Text>
+                  </View>
+                </View>
+              )}
 
               {/* Scrollable Products Table */}
               <View style={stylesLocal.productsContainer}>
