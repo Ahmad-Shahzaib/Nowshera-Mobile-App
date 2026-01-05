@@ -407,6 +407,13 @@ export default function CreateInvoice() {
       Alert.alert('Error', 'Please enter product name');
       return;
     }
+    // Validate sale rate against purchase price on add
+    const inlineRate = parseFloat(tempProduct.rate) || 0;
+    const inlinePurchase = parseFloat(tempProduct.purchase_price || '0') || 0;
+    if (inlinePurchase > 0 && inlineRate > 0 && inlineRate < inlinePurchase) {
+      Alert.alert('Invalid Rate', 'Rate cannot be less than purchase price');
+      return;
+    }
 
     // compute final price to ensure quantity/rate are applied
     const qty = parseFloat(tempProduct.quantity) || 0;
@@ -453,6 +460,14 @@ export default function CreateInvoice() {
       return;
     }
 
+    // Validate sale rate against purchase price on add
+    const rateVal = parseFloat(tempProduct.rate) || 0;
+    const purchaseVal = parseFloat(tempProduct.purchase_price || '0') || 0;
+    if (purchaseVal > 0 && rateVal > 0 && rateVal < purchaseVal) {
+      Alert.alert('Invalid Rate', 'Rate cannot be less than purchase price');
+      return;
+    }
+
     console.log('[CreateInvoice] Adding/Editing product:', tempProduct);
 
     // compute final price to ensure quantity/rate/discount are applied
@@ -492,22 +507,6 @@ export default function CreateInvoice() {
     setTempProduct(prev => {
       let updated = { ...prev, [field]: value };
 
-      // Validate rate against purchase price
-      if (field === 'rate') {
-        const rateValue = parseFloat(value) || 0;
-        const purchasePrice = parseFloat(updated.purchase_price || '0') || 0;
-        
-        // Only prevent rate less than purchase price
-        if (purchasePrice > 0 && rateValue > 0 && rateValue < purchasePrice) {
-          Alert.alert(
-            'Invalid Rate',
-            `Rate cannot be less than purchase price `,
-            [{ text: 'OK' }]
-          );
-          // Reset to purchase price
-          updated.rate = purchasePrice.toString();
-        }
-      }
 
       // Recalculate price when quantity or rate changes
       if (field === 'quantity' || field === 'rate' || field === 'discount') {

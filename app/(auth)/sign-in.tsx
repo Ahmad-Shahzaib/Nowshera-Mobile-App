@@ -197,8 +197,8 @@ const styles = StyleSheet.create({
     },
     subtitle: {
         textAlign: 'center',
-        marginBottom: 28,
-        marginTop: 8,
+        marginBottom: 18,
+        marginTop: 0,
     },
     label: {
         fontWeight: '600',

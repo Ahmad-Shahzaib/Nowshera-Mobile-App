@@ -44,8 +44,11 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCustomers(rows);
     const dealersData = await localDB.getDealers();
     setDealers(dealersData);
-    const unsynced = await localDB.getUnsynced();
-    setUnsyncedCount(unsynced.length);
+    // Count both unsynced customers and unsynced invoices so auto-sync
+    // triggers when either type of data needs uploading.
+    const unsyncedCustomers = await localDB.getUnsynced();
+    const unsyncedInvoices = await localDB.getUnsyncedInvoices();
+    setUnsyncedCount(unsyncedCustomers.length + unsyncedInvoices.length);
   }, []);
 
   useEffect(() => {
