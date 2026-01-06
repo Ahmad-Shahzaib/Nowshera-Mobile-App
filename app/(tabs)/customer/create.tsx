@@ -142,7 +142,7 @@ export default function CreateCustomer() {
           setStateVal('');
           setCountry('');
           setZip('');
-          Alert.alert('Saved offline', 'Customer saved locally and will be synced when online. Form cleared for next entry.');
+          Alert.alert('Saved offline', 'Customer saved locally and will be synced when online. ');
         }
       } else {
         // Offline: save locally as unsynced
@@ -172,7 +172,7 @@ export default function CreateCustomer() {
         setStateVal('');
         setCountry('');
         setZip('');
-        Alert.alert('Saved offline', 'Customer saved locally and will be synced when online. Form cleared for next entry.');
+        Alert.alert('Saved offline', 'Customer saved locally and will be synced when online. ');
       }
     } catch (err: any) {
       console.error('Failed to create customer:', err);

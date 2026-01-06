@@ -92,7 +92,7 @@ export default function CreateInvoice() {
   const [isLoadingInvoiceNumber, setIsLoadingInvoiceNumber] = useState(false);
   const [invoiceNumberDisabled, setInvoiceNumberDisabled] = useState(true);
 
-  // Products
+  // Products 
   const [products, setProducts] = useState<ProductItem[]>([]);
 
   // Payment details
