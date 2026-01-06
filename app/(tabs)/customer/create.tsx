@@ -112,7 +112,7 @@ export default function CreateCustomer() {
           setStateVal('');
           setCountry('');
           setZip('');
-          Alert.alert('Success', 'Customer created successfully. Form cleared for next entry.');
+          Alert.alert('Success', 'Customer created successfully.');
           } catch (e: any) {
           // If server call fails, fall back to saving locally as unsynced
           console.warn('[CreateCustomer] server create failed, saving locally', e);

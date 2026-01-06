@@ -85,6 +85,7 @@ export type CustomerRow = {
   state?: string | null;
   country?: string | null;
   zip?: string | null;
+  syncError?: string | null;
   createdAt: string;
   updatedAt: string;
   synced: number;
@@ -317,6 +318,7 @@ export async function initDB() {
         name TEXT,
         contact TEXT,
         email TEXT,
+        syncError TEXT,
         taxNumber TEXT,
         openingBalance TEXT,
         address TEXT,
@@ -348,6 +350,18 @@ export async function initDB() {
         // Drop and recreate the invoices table with correct schema
         await execSql(`DROP TABLE IF EXISTS invoices;`);
         console.log('[localDatabase] Dropped old invoices table');
+      }
+      // Ensure customers table has syncError column (migration)
+      try {
+        const info: any = await execSql(`PRAGMA table_info('customers');`);
+        const cols: string[] = [];
+        for (let i = 0; i < info.rows.length; i++) cols.push(info.rows.item(i).name);
+        if (!cols.includes('syncError')) {
+          console.log('[localDatabase] Adding missing column syncError to customers table');
+          await execSql(`ALTER TABLE customers ADD COLUMN syncError TEXT;`);
+        }
+      } catch (e) {
+        console.warn('[localDatabase] Failed to ensure customers.syncError exists:', e);
       }
       
       // Check if products table needs migration by testing for new columns
@@ -547,6 +561,7 @@ export async function addCustomer(payload: Partial<CustomerRow>) {
     name: payload.name ?? "",
     contact: payload.contact ?? null,
     email: payload.email ?? null,
+    syncError: payload.syncError ?? null,
     taxNumber: payload.taxNumber ?? null,
     openingBalance: payload.openingBalance ?? null,
     address: payload.address ?? null,
@@ -560,14 +575,15 @@ export async function addCustomer(payload: Partial<CustomerRow>) {
   };
 
   await execSql(
-    `INSERT INTO customers (id, serverId, name, contact, email, taxNumber, openingBalance, address, city, state, country, zip, createdAt, updatedAt, synced)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+    `INSERT INTO customers (id, serverId, name, contact, email, syncError, taxNumber, openingBalance, address, city, state, country, zip, createdAt, updatedAt, synced)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
     [
       row.id,
       row.serverId,
       row.name,
       row.contact,
       row.email,
+      row.syncError,
       row.taxNumber,
       row.openingBalance,
       row.address,
@@ -604,6 +620,17 @@ export async function markAsSynced(localId: string, serverId?: string) {
     `UPDATE customers SET synced = 1, serverId = ?, updatedAt = ? WHERE id = ?;`,
     [serverId ?? null, now, localId]
   );
+}
+
+export async function markCustomerAsError(localId: string, message?: string): Promise<void> {
+  try {
+    const now = new Date().toISOString();
+    await execSql(`UPDATE customers SET synced = -1, syncError = ?, updatedAt = ? WHERE id = ?;`, [message ?? null, now, localId]);
+    console.warn(`[localDatabase] Marked customer ${localId} as error (message: ${message})`);
+  } catch (error) {
+    console.error('[localDatabase] markCustomerAsError failed:', error);
+    throw error;
+  }
 }
 
 export async function updateCustomer(localId: string, patch: Partial<CustomerRow>) {
@@ -1093,6 +1120,7 @@ export default {
   updateCustomer,
   deleteCustomer,
   getCustomerById,
+  markCustomerAsError,
   clearAllCustomers,
   upsertCustomer,
   addInvoice,

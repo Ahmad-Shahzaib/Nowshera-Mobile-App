@@ -126,6 +126,18 @@ export async function syncUnsyncedCustomers(): Promise<SyncResult> {
         const errorMsg = error.response?.data?.message || error.message || 'Unknown error';
         console.warn('[syncService] Failed to sync customer:', row.id, errorMsg);
         errors.push(`${row.name}: ${errorMsg}`);
+
+        // If this is a validation / fatal error, mark the customer as errored so
+        // we don't keep retrying on every network reconnection (infinite loop).
+        const isFatal = error.response?.status === 422 || /email|validation|Integrity constraint|SQLSTATE/i.test(String(errorMsg));
+        if (isFatal) {
+          try {
+            await localDB.markCustomerAsError(row.id, errorMsg);
+            console.warn(`[syncService] Marked customer ${row.id} as error to avoid repeated retries`);
+          } catch (e) {
+            console.warn('[syncService] Failed to mark customer as error:', e);
+          }
+        }
         // Continue with next customer
       }
     }
