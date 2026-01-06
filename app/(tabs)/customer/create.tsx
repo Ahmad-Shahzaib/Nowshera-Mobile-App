@@ -52,7 +52,7 @@ export default function CreateCustomer() {
         name: name.trim(),
         contact: contact.trim(),
         email: email.trim(),
-        tax_number: taxNumber.trim() || null,
+        tax_number: taxNumber.trim() || '',
         balance: openingBalance.trim() || '0',
         opening_balance_type: openingBalanceType,
         created_by: 1,
@@ -113,14 +113,14 @@ export default function CreateCustomer() {
           setCountry('');
           setZip('');
           Alert.alert('Success', 'Customer created successfully. Form cleared for next entry.');
-        } catch (e: any) {
+          } catch (e: any) {
           // If server call fails, fall back to saving locally as unsynced
           console.warn('[CreateCustomer] server create failed, saving locally', e);
           await addCustomer({
             name: payload.billing_name,
             contact: payload.billing_phone,
-            email: payload.email,
-            taxNumber: payload.tax_number,
+            email: payload.email ?? '',
+            taxNumber: payload.tax_number ?? '',
             openingBalance: openingBalance,
             address: payload.billing_address,
             city: payload.billing_city,
@@ -130,17 +130,27 @@ export default function CreateCustomer() {
             synced: 0,
           });
           await refresh();
-          Alert.alert('Saved offline', 'Customer saved locally and will be synced when online.', [
-            { text: 'OK', onPress: () => router.back() }
-          ]);
+          // Clear form fields for next entry (offline fallback)
+          setName('');
+          setContact('');
+          setEmail('');
+          setTaxNumber('');
+          setOpeningBalance('0');
+          setOpeningBalanceType('Dr');
+          setAddress('');
+          setCity('');
+          setStateVal('');
+          setCountry('');
+          setZip('');
+          Alert.alert('Saved offline', 'Customer saved locally and will be synced when online. Form cleared for next entry.');
         }
       } else {
         // Offline: save locally as unsynced
         await addCustomer({
           name: payload.billing_name,
           contact: payload.billing_phone,
-          email: payload.email,
-          taxNumber: payload.tax_number,
+          email: payload.email ?? '',
+          taxNumber: payload.tax_number ?? '',
           openingBalance: openingBalance,
           address: payload.billing_address,
           city: payload.billing_city,
@@ -150,9 +160,19 @@ export default function CreateCustomer() {
           synced: 0,
         });
         await refresh();
-        Alert.alert('Saved offline', 'Customer saved locally and will be synced when online.', [
-          { text: 'OK', onPress: () => router.back() }
-        ]);
+        // Clear form fields for next entry
+        setName('');
+        setContact('');
+        setEmail('');
+        setTaxNumber('');
+        setOpeningBalance('0');
+        setOpeningBalanceType('Dr');
+        setAddress('');
+        setCity('');
+        setStateVal('');
+        setCountry('');
+        setZip('');
+        Alert.alert('Saved offline', 'Customer saved locally and will be synced when online. Form cleared for next entry.');
       }
     } catch (err: any) {
       console.error('Failed to create customer:', err);

@@ -14,7 +14,7 @@ import type { Category, Product } from '@/types/product';
 import type { Warehouse } from '@/types/warehouse';
 import { MaterialIcons } from '@expo/vector-icons';
 import BottomSheet, { BottomSheetBackdrop, BottomSheetScrollView } from '@gorhom/bottom-sheet';
-import { useRouter } from 'expo-router';
+import { useFocusEffect, useRouter } from 'expo-router';
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
@@ -190,8 +190,25 @@ export default function CreateInvoice() {
       reference: '',
     });
 
+    // Ensure any open bottom sheets are closed
+    try { addProductBottomSheetRef.current?.close(); } catch (e) { /* ignore */ }
+    try { addPaymentBottomSheetRef.current?.close(); } catch (e) { /* ignore */ }
+
     // Scroll to top
     mainScrollViewRef.current?.scrollTo({ y: 0, animated: true });
+  }, []);
+
+  // Reset form whenever this screen is focused to avoid stale state
+  useFocusEffect(
+    useCallback(() => {
+      resetForm();
+    }, [resetForm])
+  );
+
+  // Also reset once on mount to ensure initial state is clean
+  useEffect(() => {
+    resetForm();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // Calculate totals with memoization
@@ -764,7 +781,7 @@ export default function CreateInvoice() {
                 resetForm();
               }
             },
-            { text: 'Done', onPress: () => router.back() }
+            { text: 'Done', onPress: () => { resetForm(); router.back(); } }
           ]
         );
       } else {

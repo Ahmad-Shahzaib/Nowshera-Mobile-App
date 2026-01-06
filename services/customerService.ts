@@ -218,9 +218,16 @@ export const customerService = {
       const localCustomer = await localDB.getCustomerById(id.toString());
 
       if (localCustomer) {
+        const openingRaw = localCustomer.openingBalance ?? '0';
+        const openingNum = parseFloat(String(openingRaw)) || 0;
+        const openingStr = String(openingRaw);
+        const balanceType = openingNum < 0 ? 'Cr' : 'Dr';
+
         const result = {
           customer: localRowToCustomer(localCustomer),
-          account_balance: { balance: localCustomer.openingBalance || '0' },
+          account_balance: { opening_balance: openingStr, opening_balance_type: balanceType },
+          calculated_balance: openingNum,
+          journal_items: [],
           custom_fields: []
         };
 

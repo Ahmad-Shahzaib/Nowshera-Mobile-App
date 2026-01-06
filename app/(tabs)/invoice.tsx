@@ -7,10 +7,13 @@ import useNetwork from '@/hooks/useNetwork';
 import useResponsive from '@/hooks/useResponsive';
 import { customerService } from '@/services/customerService';
 import { invoiceService } from '@/services/invoiceService';
+import localDB from '@/services/localDatabase';
 import { Customer } from '@/types/customer';
 import { Invoice } from '@/types/invoice';
 import { MaterialIcons } from '@expo/vector-icons';
+import * as Print from 'expo-print';
 import { useFocusEffect, useRouter } from 'expo-router';
+import * as Sharing from 'expo-sharing';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -38,11 +41,12 @@ export default function InvoiceScreen() {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  
+
   // Pagination state
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalInvoices, setTotalInvoices] = useState(0);
+  const [unsyncedCount, setUnsyncedCount] = useState(0);
   const perPage = 10;
 
   // Filter state
@@ -70,20 +74,20 @@ export default function InvoiceScreen() {
       } else {
         setLoading(true);
       }
-      
+
       console.log(`[Invoice Screen] Loading invoices (page ${page}, online: ${isConnected})...`);
-      
+
       if (isConnected) {
         // Online: Fetch from backend with pagination
         const result = await invoiceService.getInvoices(page, perPage);
         console.log(`[Invoice Screen] Loaded ${result.invoices.length} invoices from backend (page ${page}/${result.totalPages})`);
-        
+
         if (append) {
           setInvoices(prev => [...prev, ...result.invoices]);
         } else {
           setInvoices(result.invoices);
         }
-        
+
         setCurrentPage(result.currentPage);
         setTotalPages(result.totalPages);
         setTotalInvoices(result.total);
@@ -117,11 +121,21 @@ export default function InvoiceScreen() {
     }
   }, []);
 
-  
+
   useFocusEffect(
     useCallback(() => {
       setCurrentPage(1);
       loadInvoices(1, false);
+      // also refresh unsynced count when screen focuses
+      (async () => {
+        try {
+          const unsynced = await localDB.getUnsyncedInvoices();
+          setUnsyncedCount(unsynced.length);
+        } catch (e) {
+          console.warn('[Invoice Screen] Failed to get unsynced invoices count', e);
+          setUnsyncedCount(0);
+        }
+      })();
       loadCustomers();
     }, [loadInvoices, loadCustomers])
   );
@@ -218,12 +232,92 @@ export default function InvoiceScreen() {
       });
     };
 
+    const generatePdfAndShare = async (inv: InvoiceItem) => {
+      try {
+        // Try to fetch detailed invoice (items/payments) from service
+        const detailResult = await invoiceService.getInvoiceDetail(inv.serverId || inv.id);
+        const items = detailResult?.items ?? [];
+        const totals = detailResult?.totals ?? null;
+
+        const formatNum = (n: number | string) => {
+          const num = typeof n === 'number' ? n : parseFloat(String(n) || '0');
+          return num.toLocaleString('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+        };
+
+        const rowsHtml = items.map((it, idx) => {
+          const desc = it.description || (it as any).sub_description || '-';
+          const qty = it.quantity ?? 0;
+          const rate = parseFloat(it.price as any || '0');
+          const value = it.subtotal ?? Math.round(qty * rate);
+          return `<tr><td style="padding:6px;border:1px solid #ddd">${idx + 1}</td><td style="padding:6px;border:1px solid #ddd">${desc}</td><td style="padding:6px;border:1px solid #ddd">${qty}</td><td style="padding:6px;border:1px solid #ddd">${formatNum(rate)}</td><td style="padding:6px;border:1px solid #ddd">${formatNum(value)}</td></tr>`;
+        }).join('') || '<tr><td style="padding:6px;border:1px solid #ddd" colspan="5">No items</td></tr>';
+
+        // Grand total: sum of per-line values
+        const computedTotal = items.reduce((s: number, it: any) => {
+          const qty = it.quantity ?? 0;
+          const rate = parseFloat(it.price as any || '0');
+          const value = it.subtotal ?? Math.round(qty * rate);
+          return s + (isNaN(value) ? 0 : value);
+        }, 0);
+
+        const dueAmount = (totals && typeof totals.due === 'number') ? totals.due : parseFloat(inv.dueAmount || '0');
+
+        const html = `
+          <html>
+            <head>
+              <meta name="viewport" content="width=device-width, initial-scale=1" />
+              <style>
+                body { font-family: Arial, Helvetica, sans-serif; padding: 18px; color: #222 }
+                .header { text-align:center; margin-bottom:12px }
+                .title { font-size:20px; font-weight:700 }
+                .row { display:flex; justify-content:space-between; margin-top:8px }
+                .table { width:100%; border-collapse: collapse; margin-top: 12px }
+                .table th, .table td { border: 1px solid #ddd; padding: 6px; text-align: left }
+                .totals { margin-top: 12px; text-align: right }
+              </style>
+            </head>
+            <body>
+              <div class="header"><div class="title">SALE INVOICE</div></div>
+              <div class="row"><div><strong>Invoice #:</strong></div><div>${inv.invoiceNo}</div></div>
+              <div class="row"><div><strong>Date:</strong></div><div>${new Date(inv.issueDate).toLocaleDateString()}</div></div>
+              <div class="row"><div><strong>Customer:</strong></div><div>${inv.customerName}</div></div>
+              <table class="table">
+                <thead>
+                  <tr><th style="padding:6px">S#</th><th style="padding:6px">Product</th><th style="padding:6px">Qty</th><th style="padding:6px">Rate</th><th style="padding:6px">Total</th></tr>
+                </thead>
+                <tbody>
+                  ${rowsHtml}
+                </tbody>
+              </table>
+              <div class="totals">
+                <div style="display:flex;justify-content:space-between;align-items:center">
+                  <div><strong>Due: ${formatNum(dueAmount)}</strong></div>
+                  <div><strong>Total: ${formatNum(computedTotal)}</strong></div>
+                </div>
+              </div>
+            </body>
+          </html>
+        `;
+
+        const { uri } = await Print.printToFileAsync({ html });
+        if (!(await Sharing.isAvailableAsync())) {
+          console.log('Sharing not available on this platform');
+          return;
+        }
+        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Invoice ${inv.invoiceNo}` });
+      } catch (e) {
+        console.error('Failed to generate/share PDF', e);
+      }
+    };
+
     return (
-  <View style={stylesLocal.rowWrapper}>
+      <View style={stylesLocal.rowWrapper}>
         <ThemedView style={[stylesLocal.card, { width: '100%' }]}>
           <View style={stylesLocal.left}>
             <TouchableOpacity style={stylesLocal.idChip} activeOpacity={0.85}>
-              <ThemedText type="link" style={stylesLocal.idText}>{item.invoiceNo}</ThemedText>
+              <ThemedText type="link" style={stylesLocal.idText}>
+                {String(item.invoiceNo).slice(0, 12)}
+              </ThemedText>
             </TouchableOpacity>
 
             <ThemedText type="defaultSemiBold" style={[stylesLocal.name, { color: text }]}>{item.customerName}</ThemedText>
@@ -255,13 +349,22 @@ export default function InvoiceScreen() {
               >
                 <MaterialIcons name="edit" size={resp.fontSize(14)} color="#fff" />
               </TouchableOpacity>
-              <TouchableOpacity 
-                style={[stylesLocal.iconBtn, { backgroundColor: '#ff4d6d' }]} 
+              <TouchableOpacity
+                style={[stylesLocal.iconBtn, { backgroundColor: '#ff4d6d' }]}
                 accessibilityLabel={`Delete ${item.invoiceNo}`}
                 onPress={() => handleDelete(item.id)}
               >
                 <MaterialIcons name="delete" size={resp.fontSize(14)} color="#fff" />
               </TouchableOpacity>
+              <TouchableOpacity
+                style={[stylesLocal.iconBtn, { backgroundColor: '#3498db' }]}
+                accessibilityLabel={`Share ${item.invoiceNo}`}
+                onPress={() => generatePdfAndShare(item)}
+              >
+                <MaterialIcons name="share" size={resp.fontSize(14)} color="#fff" />
+              </TouchableOpacity>
+
+
             </View>
           </View>
         </ThemedView>
@@ -381,11 +484,11 @@ export default function InvoiceScreen() {
       if (!isConnected) {
         return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
       }
-      
+
       // If one is unsynced and other is synced, unsynced comes first
       if (a.synced === 0 && b.synced !== 0) return -1;
       if (a.synced !== 0 && b.synced === 0) return 1;
-      
+
       // If both have same sync status, sort by creation date (newest first)
       return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
     });
@@ -395,7 +498,17 @@ export default function InvoiceScreen() {
     <SafeAreaView style={{ flex: 1 }} edges={["bottom"]}>
       <ThemedView style={[stylesLocal.container, { backgroundColor: bg }]}>
         <View style={[stylesLocal.headerWrap, stylesLocal.headerRow]}>
-          <ThemedText type="defaultSemiBold" style={[stylesLocal.title, { color: text }]}>Manage Invoices</ThemedText>
+          <View>
+            <ThemedText type="defaultSemiBold" style={[stylesLocal.title, { color: text }]}>Manage Invoices</ThemedText>
+            <View style={stylesLocal.headerBadges}>
+              <View style={[stylesLocal.countBadge, { backgroundColor: tint }]}> 
+                <Text style={stylesLocal.countText}>Total: {totalInvoices}</Text>
+              </View>
+              <View style={[stylesLocal.countBadge, { backgroundColor: '#ff9800', marginLeft: resp.horizontalScale(8) }]}> 
+                <Text style={stylesLocal.countText}>Unsynced: {unsyncedCount}</Text>
+              </View>
+            </View>
+          </View>
 
           <TouchableOpacity
             activeOpacity={0.85}
@@ -407,28 +520,28 @@ export default function InvoiceScreen() {
           </TouchableOpacity>
         </View>
 
- <View style={stylesLocal.filtersFooter}>
-              <View style={{ flex: 1 }} />
-              <View style={stylesLocal.iconGroupCompact}>
-                <TouchableOpacity style={stylesLocal.iconCircle} accessibilityLabel="Search" onPress={() => { searchInputRef.current?.focus(); }}>
-                  <MaterialIcons name="search" size={resp.fontSize(16)} color="#000" />
-                </TouchableOpacity>
-                <TouchableOpacity style={[stylesLocal.iconCircle]} accessibilityLabel="Reset" onPress={() => {
-                  // clear all filters, close modals and clear search
-                  setSelectedDate(null);
-                  setSelectedCustomer(null);
-                  setSelectedStatus(null);
-                  setSelectedShop(null);
-                  setShowDateModal(false);
-                  setShowCustomerModal(false);
-                  setShowStatusModal(false);
-                  setShowShopModal(false);
-                  setSearchText('');
-                }}>
-                  <MaterialIcons name="refresh" size={resp.fontSize(16)} color="#00" />
-                </TouchableOpacity>
-              </View>
-            </View>
+        <View style={stylesLocal.filtersFooter}>
+          <View style={{ flex: 1 }} />
+          <View style={stylesLocal.iconGroupCompact}>
+            <TouchableOpacity style={stylesLocal.iconCircle} accessibilityLabel="Search" onPress={() => { searchInputRef.current?.focus(); }}>
+              <MaterialIcons name="search" size={resp.fontSize(16)} color="#000" />
+            </TouchableOpacity>
+            <TouchableOpacity style={[stylesLocal.iconCircle]} accessibilityLabel="Reset" onPress={() => {
+              // clear all filters, close modals and clear search
+              setSelectedDate(null);
+              setSelectedCustomer(null);
+              setSelectedStatus(null);
+              setSelectedShop(null);
+              setShowDateModal(false);
+              setShowCustomerModal(false);
+              setShowStatusModal(false);
+              setShowShopModal(false);
+              setSearchText('');
+            }}>
+              <MaterialIcons name="refresh" size={resp.fontSize(16)} color="#00" />
+            </TouchableOpacity>
+          </View>
+        </View>
         <View style={stylesLocal.filtersCompact}>
           <View style={stylesLocal.filtersGrid}>
             <TouchableOpacity style={stylesLocal.filterItem} accessibilityLabel="Pick issue date" onPress={() => setShowDateModal(true)}>
@@ -448,7 +561,7 @@ export default function InvoiceScreen() {
             </TouchableOpacity>
           </View>
 
-           
+
         </View>
 
         {/* Dropdown / calendar modals */}
@@ -556,11 +669,13 @@ export default function InvoiceScreen() {
 
 const createStyles = (resp: ReturnType<typeof useResponsive>, theme: { bg: string; text: string; tint: string; icon: string }) =>
   StyleSheet.create({
-    container: { flex: 1, paddingVertical: resp.horizontalScale(16),
+    container: {
+      flex: 1, paddingVertical: resp.horizontalScale(16),
       paddingHorizontal: resp.horizontalScale(16),
       marginBottom: resp.vertical(20),
-      
-      backgroundColor: theme.bg },
+
+      backgroundColor: theme.bg
+    },
     header: { marginBottom: resp.vertical(12) },
     title: { fontSize: resp.fontSize(18) },
     filters: {
@@ -690,7 +805,7 @@ const createStyles = (resp: ReturnType<typeof useResponsive>, theme: { bg: strin
     },
     filterText: { fontSize: resp.fontSize(13) },
     iconGroupCompact: { flexDirection: 'row', marginLeft: resp.horizontalScale(8) },
-    iconCircle: { width: resp.horizontalScale(20), height: resp.horizontalScale(20), borderRadius: resp.horizontalScale(10),  marginLeft: resp.horizontalScale(8) },
+    iconCircle: { width: resp.horizontalScale(20), height: resp.horizontalScale(20), borderRadius: resp.horizontalScale(10), marginLeft: resp.horizontalScale(8) },
     // modal styles
     modalOverlay: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, backgroundColor: 'rgba(0,0,0,0.35)' },
     modalContent: { position: 'absolute', left: '6%', right: '6%', top: '25%', maxHeight: '50%', backgroundColor: theme.bg === Colors.light.background ? '#fff' : '#0f0f0f', borderRadius: resp.horizontalScale(10), padding: resp.horizontalScale(12), borderWidth: 1, borderColor: '#e6eaee' },
@@ -709,9 +824,12 @@ const createStyles = (resp: ReturnType<typeof useResponsive>, theme: { bg: strin
     dayBtnEmpty: { width: resp.horizontalScale(36), height: resp.horizontalScale(36), alignItems: 'center', justifyContent: 'center' },
     dayText: { color: theme.text },
     filtersGrid: { flexDirection: 'row', flexWrap: 'wrap', justifyContent: 'space-between' },
-  filtersFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', paddingTop: resp.vertical(6) },
+    filtersFooter: { flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', paddingTop: resp.vertical(6) },
     headerWrap: { paddingBottom: resp.vertical(6) },
     headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
+    headerBadges: { flexDirection: 'row', marginTop: resp.vertical(6) },
+    countBadge: { paddingVertical: resp.vertical(4), paddingHorizontal: resp.horizontalScale(8), borderRadius: resp.horizontalScale(8) },
+    countText: { color: '#fff', fontWeight: '700', fontSize: resp.fontSize(12) },
     addButton: { paddingVertical: resp.vertical(6), paddingHorizontal: resp.horizontalScale(10), borderRadius: resp.horizontalScale(8) },
     addButtonText: { color: '#fff', fontSize: resp.fontSize(13) },
     offlineBanner: {
