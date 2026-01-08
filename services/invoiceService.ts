@@ -272,8 +272,10 @@ export const invoiceService = {
 
   /**
    * Create a new invoice - OFFLINE FIRST
-   * 1. Save to local DB immediately with items and payments
-   * 2. If online, sync to API
+   * ✔ If offline: Save to local DB as UNSYNCED, sync later when online
+   * ✔ If online: Try to sync to API immediately
+   *   - On success: Mark as SYNCED (do NOT store in local DB)
+   *   - On failure (e.g., 422): Mark as FAILED with error message
    */
   async createInvoice(invoiceData: {
     invoice: Partial<Invoice>;
@@ -292,13 +294,120 @@ export const invoiceService = {
       reference?: string;
     }>;
   }): Promise<Invoice | null> {
-    try {
-      const { invoice, items, payments } = invoiceData;
-      
-      // Save invoice locally first
+    const { invoice, items, payments } = invoiceData;
+    const online = await isOnline();
+
+    // Check if customer has a local ID (not yet synced to server)
+    const hasLocalCustomerId = invoice.customerId?.toString().startsWith('local_');
+
+    if (online && !hasLocalCustomerId) {
+      // ONLINE PATH: Try to sync to API immediately
+      try {
+        const axios = getAxiosInstance();
+
+        // Prepare API payload - payments can be empty array
+        const payload = {
+          customer_type: invoice.customerType || 'Customer',
+          customer_id: parseInt(invoice.customerId || '0') || 0,
+          issue_date: invoice.issueDate,
+          due_date: invoice.dueDate,
+          category_id: parseInt(invoice.categoryId || '0') || 0,
+          warehouse_id: parseInt(invoice.warehouseId || '0') || 0,
+          ref_number: invoice.refNumber,
+          delivery_status: invoice.deliveryStatus || 'Pending',
+          items: items.map(item => ({
+            id: item.id,
+            quantity: item.quantity,
+            description: item.description,
+            price: item.price,
+            shop_id: item.shop_id || 1,
+          })),
+          payments: payments.map(payment => ({
+            amount: payment.amount,
+            account_id: payment.account_id,
+            payment_method: payment.payment_method || 1,
+            date: payment.date,
+            reference: payment.reference || '',
+          })),
+        };
+
+        console.log('[invoiceService] Online - Syncing invoice to API:', payload);
+        const response = await axios.post('/invoice/store', payload);
+
+        if (response.data?.status) {
+          const serverId = response.data?.data?.id || response.data?.data?.invoice_id;
+          console.log('[invoiceService] ✓ Invoice created on server successfully (ID: ' + serverId + ')');
+          
+          // Return success without storing in local DB (successful online invoices don't need local storage)
+          return {
+            id: `temp_${Date.now()}`,
+            invoiceNo: invoice.invoiceNo || `#INVO${String(Date.now()).slice(-5)}`,
+            customerId: invoice.customerId || '0',
+            customerName: invoice.customerName || 'Unknown',
+            warehouseId: invoice.warehouseId || '0',
+            issueDate: invoice.issueDate || new Date().toISOString(),
+            subTotal: invoice.subTotal || '0',
+            discountTotal: invoice.discountTotal || '0',
+            taxTotal: invoice.taxTotal || '0',
+            grandTotal: invoice.grandTotal || '0',
+            dueAmount: invoice.dueAmount || '0',
+            status: invoice.status || 'Unpaid',
+            serverId: String(serverId),
+            synced: 1,
+            syncStatus: 'SYNCED',
+            createdAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          } as Invoice;
+        } else {
+          throw new Error('API returned status false');
+        }
+      } catch (error: any) {
+        const errorMsg = error.response?.data?.message || error.message || 'Unknown error';
+        console.error('[invoiceService] ✗ Failed to create invoice on server:', errorMsg);
+
+        // Save locally as FAILED for later inspection
+        const localInvoice = await localDB.addInvoice({
+          ...invoice,
+          synced: 0,
+          syncStatus: 'FAILED',
+          syncError: errorMsg,
+        });
+
+        // Save invoice items locally
+        for (const item of items) {
+          await localDB.addInvoiceItem({
+            invoiceId: localInvoice.id,
+            productId: item.id,
+            quantity: item.quantity,
+            price: item.price,
+            description: item.description,
+            shopId: item.shop_id,
+          });
+        }
+
+        // Save invoice payments locally
+        for (const payment of payments) {
+          await localDB.addInvoicePayment({
+            invoiceId: localInvoice.id,
+            amount: payment.amount,
+            accountId: payment.account_id,
+            paymentMethod: payment.payment_method,
+            date: payment.date,
+            reference: payment.reference,
+          });
+        }
+
+        return localRowToInvoice(localInvoice);
+      }
+    } else {
+      // OFFLINE PATH: Save to local DB as UNSYNCED
+      const syncStatus = 'UNSYNCED';
+      console.log('[Invoice] Offline detected — invoice saved locally (UNSYNCED)');
+
       const localInvoice = await localDB.addInvoice({
         ...invoice,
-        synced: 0, // Mark as unsynced
+        synced: 0,
+        syncStatus,
       });
 
       // Save invoice items locally
@@ -325,69 +434,8 @@ export const invoiceService = {
         });
       }
 
-      // Try to sync to API if online
-      const online = await isOnline();
-      if (online) {
-        try {
-          // Check if customer has a local ID (not yet synced)
-          const hasLocalCustomerId = invoice.customerId?.toString().startsWith('local_');
-          
-          if (hasLocalCustomerId) {
-            console.log('[invoiceService] Customer not synced yet (local ID), will sync invoice later');
-            // Don't sync invoice yet - it will be synced when customer is synced
-            return localRowToInvoice(localInvoice);
-          }
-          
-          const axios = getAxiosInstance();
-          
-          // Prepare API payload
-          const payload = {
-            customer_type: invoice.customerType || 'Customer',
-            customer_id: parseInt(invoice.customerId || '0') || 0,
-            issue_date: invoice.issueDate,
-            due_date: invoice.dueDate,
-            category_id: parseInt(invoice.categoryId || '0') || 0,
-            warehouse_id: parseInt(invoice.warehouseId || '0') || 0,
-            ref_number: invoice.refNumber,
-            delivery_status: invoice.deliveryStatus || 'Pending',
-            items: items.map(item => ({
-              id: item.id,
-              quantity: item.quantity,
-              description: item.description,
-              price: item.price,
-              shop_id: item.shop_id || 1,
-            })),
-            payments: payments.map(payment => ({
-              amount: payment.amount,
-              account_id: payment.account_id,
-              payment_method: payment.payment_method || 1,
-              date: payment.date,
-              reference: payment.reference || '',
-            })),
-          };
-
-          console.log('[invoiceService] Syncing invoice to API:', payload);
-          const response = await axios.post('/invoice/store', payload);
-          
-          if (response.data?.status) {
-            const serverId = response.data?.data?.id || response.data?.data?.invoice_id;
-            if (serverId) {
-              await localDB.markInvoiceAsSynced(localInvoice.id, String(serverId));
-              console.log('[invoiceService] Invoice synced successfully, serverId:', serverId);
-            }
-          }
-        } catch (error: any) {
-          console.error('[invoiceService] API sync failed, will retry later:', error);
-          console.error('[invoiceService] Error details:', error.response?.data);
-        }
-      } else {
-        console.log('[invoiceService] Offline mode - invoice saved locally for later sync');
-      }
-
+      console.log('[invoiceService] Invoice saved locally with ID:', localInvoice.id);
       return localRowToInvoice(localInvoice);
-    } catch (error) {
-      console.error('[invoiceService] createInvoice error:', error);
-      return null;
     }
   },
 

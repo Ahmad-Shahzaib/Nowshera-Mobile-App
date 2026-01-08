@@ -51,6 +51,7 @@ let lastErrorTime = 0;
 let errorCount = 0;
 const ERROR_LOG_INTERVAL = 5000; // Only log errors every 5 seconds max
 let dbInitialized = false; // Track if DB has been initialized
+let initDBPromise: Promise<void> | null = null; // Guard against concurrent initDB calls
 
 export function enableDbLogging(enable = true) {
   verboseLogging = enable;
@@ -114,6 +115,8 @@ export type InvoiceRow = {
   createdAt: string;
   updatedAt: string;
   synced: number;
+  syncStatus?: 'UNSYNCED' | 'SYNCED' | 'FAILED';
+  syncError?: string | null;
 };
 
 export type InvoiceItemRow = {
@@ -310,246 +313,382 @@ async function execSql<T = any>(sql: string, args: any[] = [], _retryCount = 0):
 }
 
 export async function initDB() {
-  try {
-    await execSql(
-      `CREATE TABLE IF NOT EXISTS customers (
-        id TEXT PRIMARY KEY NOT NULL,
-        serverId TEXT,
-        name TEXT,
-        contact TEXT,
-        email TEXT,
-        syncError TEXT,
-        taxNumber TEXT,
-        openingBalance TEXT,
-        address TEXT,
-        city TEXT,
-        state TEXT,
-        country TEXT,
-        zip TEXT,
-        createdAt TEXT,
-        updatedAt TEXT,
-        synced INTEGER DEFAULT 0
-      );`
-    );
-    
-    // Only run migration check once per session
-    if (!dbInitialized) {
-      // Check if invoices table needs migration by testing for required columns
-      let needsRecreate = false;
-      try {
-        await execSql(`SELECT warehouseId, subTotal FROM invoices LIMIT 1;`);
-      } catch (e: any) {
-        // If we get a column error, we need to recreate the table
-        if (e?.message?.includes('no column named') || e?.message?.includes('no such column')) {
-          needsRecreate = true;
-          console.log('[localDatabase] Invoices table schema outdated, recreating...');
+  // Guard against concurrent initDB calls
+  if (initDBPromise) {
+    return initDBPromise;
+  }
+
+  initDBPromise = (async () => {
+    try {
+      await execSql(
+        `CREATE TABLE IF NOT EXISTS customers (
+          id TEXT PRIMARY KEY NOT NULL,
+          serverId TEXT,
+          name TEXT,
+          contact TEXT,
+          email TEXT,
+          syncError TEXT,
+          taxNumber TEXT,
+          openingBalance TEXT,
+          address TEXT,
+          city TEXT,
+          state TEXT,
+          country TEXT,
+          zip TEXT,
+          createdAt TEXT,
+          updatedAt TEXT,
+          synced INTEGER DEFAULT 0
+        );`
+      );
+      
+      // ALWAYS check and migrate invoices table schema (every load, not just first time)
+      // This ensures old databases with missing columns get fixed
+      // BUT: Use PRAGMA table_info to check safely WITHOUT reading data
+      {
+        let needsInvoiceRecreate = false;
+        try {
+          const info: any = await execSql(`PRAGMA table_info('invoices');`);
+          const cols: string[] = [];
+          for (let i = 0; i < info.rows.length; i++) {
+            cols.push(info.rows.item(i).name);
+          }
+          
+          if (!cols.includes('syncStatus') || !cols.includes('syncError')) {
+            needsInvoiceRecreate = true;
+            console.warn('[localDatabase] ⚠️  Invoices table missing sync columns, will recreate...');
+          } else {
+            if (verboseLogging) console.log('[localDatabase] ✓ Invoices table has required columns');
+          }
+        } catch (e: any) {
+          // If table doesn't exist yet, that's fine - will be created below
+          const msg = String(e?.message || e);
+          if (!msg.includes('no such table')) {
+            console.warn('[localDatabase] Error checking invoices table schema:', e);
+          }
+        }
+        
+        if (needsInvoiceRecreate) {
+          let dropSucceeded = false;
+          let dropAttempts = 0;
+          
+          // Retry dropping tables up to 3 times in case of database lock
+          while (!dropSucceeded && dropAttempts < 3) {
+            try {
+              dropAttempts++;
+              console.log(`[localDatabase] Recreating invoice tables (attempt ${dropAttempts}/3)...`);
+              
+              // Drop tables with small delay between operations
+              await execSql(`DROP TABLE IF EXISTS invoice_payments;`);
+              await new Promise(resolve => setTimeout(resolve, 100));
+              
+              await execSql(`DROP TABLE IF EXISTS invoice_items;`);
+              await new Promise(resolve => setTimeout(resolve, 100));
+              
+              await execSql(`DROP TABLE IF EXISTS invoices;`);
+              
+              console.log('[localDatabase] ✓ Dropped outdated invoice tables');
+              dropSucceeded = true;
+            } catch (e: any) {
+              const msg = String(e?.message || e);
+              if (msg.includes('database is locked')) {
+                console.warn(`[localDatabase] Database locked when dropping tables (attempt ${dropAttempts}/3), waiting...`);
+                // Wait a bit longer before retry
+                await new Promise(resolve => setTimeout(resolve, 500 * dropAttempts));
+              } else {
+                console.error(`[localDatabase] Failed to drop invoice tables (attempt ${dropAttempts}/3):`, e);
+                if (dropAttempts >= 3) {
+                  console.warn('[localDatabase] Giving up on table recreation - tables will be created as-is');
+                  break;
+                }
+              }
+            }
+          }
         }
       }
       
-      if (needsRecreate) {
-        // Drop and recreate the invoices table with correct schema
-        await execSql(`DROP TABLE IF EXISTS invoices;`);
-        console.log('[localDatabase] Dropped old invoices table');
+      // Only run other migrations once per session
+      if (!dbInitialized) {
+        // Ensure customers table has syncError column (migration)
+        try {
+          const info: any = await execSql(`PRAGMA table_info('customers');`);
+          const cols: string[] = [];
+          for (let i = 0; i < info.rows.length; i++) cols.push(info.rows.item(i).name);
+          if (!cols.includes('syncError')) {
+            console.log('[localDatabase] Adding missing column syncError to customers table');
+            await execSql(`ALTER TABLE customers ADD COLUMN syncError TEXT;`);
+          }
+        } catch (e) {
+          console.warn('[localDatabase] Failed to ensure customers.syncError exists:', e);
+        }
+        
+        let needsProductsRecreate = false;
+        try {
+          const info: any = await execSql(`PRAGMA table_info('products');`);
+          const cols: string[] = [];
+          for (let i = 0; i < info.rows.length; i++) {
+            cols.push(info.rows.item(i).name);
+          }
+          // Check if products table has the required columns
+          if (!cols.includes('sale_price') || !cols.includes('name')) {
+            needsProductsRecreate = true;
+            console.log('[localDatabase] Products table schema outdated, recreating...');
+          }
+        } catch (e: any) {
+          const msg = String(e?.message || e);
+          if (!msg.includes('no such table')) {
+            console.warn('[localDatabase] Error checking products table schema:', e);
+          }
+        }
+        
+        if (needsProductsRecreate) {
+          // Drop and recreate the products table with correct schema
+          try {
+            await execSql(`DROP TABLE IF EXISTS products;`);
+            console.log('[localDatabase] Dropped old products table');
+          } catch (e) {
+            console.warn('[localDatabase] Failed to drop old products table:', e);
+          }
+        }
+        
+        dbInitialized = true;
       }
-      // Ensure customers table has syncError column (migration)
+      
+      await execSql(
+        `CREATE TABLE IF NOT EXISTS invoices (
+          id TEXT PRIMARY KEY NOT NULL,
+          serverId TEXT,
+          invoiceNo TEXT,
+          customerId TEXT,
+          customerName TEXT,
+          customerType TEXT,
+          categoryId TEXT,
+          warehouseId TEXT,
+          warehouseName TEXT,
+          refNumber TEXT,
+          deliveryStatus TEXT,
+          issueDate TEXT,
+          dueDate TEXT,
+          subTotal TEXT,
+          discountTotal TEXT,
+          taxTotal TEXT,
+          grandTotal TEXT,
+          dueAmount TEXT,
+          status TEXT,
+          createdAt TEXT,
+          updatedAt TEXT,
+          synced INTEGER DEFAULT 0,
+          syncStatus TEXT DEFAULT 'UNSYNCED',
+          syncError TEXT
+        );`
+      );
+      
+      // Create products table
+      await execSql(
+        `CREATE TABLE IF NOT EXISTS products (
+          id INTEGER PRIMARY KEY NOT NULL,
+          label TEXT NOT NULL,
+          name TEXT,
+          sku TEXT,
+          sale_price TEXT,
+          purchase_price TEXT,
+          description TEXT,
+          type TEXT,
+          category_id INTEGER,
+          unit_id INTEGER,
+          syncedAt INTEGER
+        );`
+      );
+      
+      // Create index on product label for faster search
+      await execSql(
+        `CREATE INDEX IF NOT EXISTS idx_products_label ON products(label);`
+      );
+      
+      // Create invoice_items table
+      await execSql(
+        `CREATE TABLE IF NOT EXISTS invoice_items (
+          id TEXT PRIMARY KEY NOT NULL,
+          invoiceId TEXT NOT NULL,
+          productId TEXT,
+          productName TEXT,
+          quantity TEXT,
+          price TEXT,
+          discount TEXT,
+          tax TEXT,
+          description TEXT,
+          shopId TEXT,
+          createdAt TEXT,
+          FOREIGN KEY(invoiceId) REFERENCES invoices(id) ON DELETE CASCADE
+        );`
+      );
+      
+      // Create invoice_payments table
+      await execSql(
+        `CREATE TABLE IF NOT EXISTS invoice_payments (
+          id TEXT PRIMARY KEY NOT NULL,
+          invoiceId TEXT NOT NULL,
+          amount TEXT,
+          accountId TEXT,
+          accountName TEXT,
+          paymentMethod TEXT,
+          date TEXT,
+          reference TEXT,
+          createdAt TEXT,
+          FOREIGN KEY(invoiceId) REFERENCES invoices(id) ON DELETE CASCADE
+        );`
+      );
+      
+      // Create dealers table
+      await execSql(
+        `CREATE TABLE IF NOT EXISTS dealers (
+          id TEXT PRIMARY KEY NOT NULL,
+          serverId TEXT,
+          name TEXT NOT NULL,
+          description TEXT,
+          syncError TEXT,
+          syncedAt INTEGER,
+          createdAt TEXT,
+          updatedAt TEXT,
+          synced INTEGER DEFAULT 0
+        );`
+      );
+      
+      // Ensure dealers table has syncedAt column (migration)
       try {
-        const info: any = await execSql(`PRAGMA table_info('customers');`);
+        const info: any = await execSql(`PRAGMA table_info('dealers');`);
         const cols: string[] = [];
         for (let i = 0; i < info.rows.length; i++) cols.push(info.rows.item(i).name);
-        if (!cols.includes('syncError')) {
-          console.log('[localDatabase] Adding missing column syncError to customers table');
-          await execSql(`ALTER TABLE customers ADD COLUMN syncError TEXT;`);
+        if (!cols.includes('syncedAt')) {
+          console.log('[localDatabase] Adding missing column syncedAt to dealers table');
+          await execSql(`ALTER TABLE dealers ADD COLUMN syncedAt INTEGER;`);
         }
       } catch (e) {
-        console.warn('[localDatabase] Failed to ensure customers.syncError exists:', e);
+        console.warn('[localDatabase] Failed to ensure dealers.syncedAt exists:', e);
       }
+
+      // Create bank_accounts table
+      await execSql(
+        `CREATE TABLE IF NOT EXISTS bank_accounts (
+          id TEXT PRIMARY KEY NOT NULL,
+          warehouseId TEXT,
+          holderName TEXT,
+          bankName TEXT,
+          accountNumber TEXT,
+          chartAccountId TEXT,
+          openingBalance TEXT,
+          contactNumber TEXT,
+          bankAddress TEXT,
+          createdBy TEXT,
+          shopId TEXT,
+          createdAt TEXT,
+          updatedAt TEXT,
+          syncedAt TEXT
+        );`
+      );
       
-      // Check if products table needs migration by testing for new columns
-      let needsProductsRecreate = false;
+      // Ensure bank_accounts table has all required columns (migration)
       try {
-        await execSql(`SELECT name, sale_price, description FROM products LIMIT 1;`);
-      } catch (e: any) {
-        // If we get a column error, we need to recreate the table
-        if (e?.message?.includes('no column named') || e?.message?.includes('no such column')) {
-          needsProductsRecreate = true;
-          console.log('[localDatabase] Products table schema outdated, recreating...');
+        const info: any = await execSql(`PRAGMA table_info('bank_accounts');`);
+        const cols: string[] = [];
+        for (let i = 0; i < info.rows.length; i++) cols.push(info.rows.item(i).name);
+        if (!cols.includes('holderName')) {
+          console.log('[localDatabase] Adding missing column holderName to bank_accounts table');
+          await execSql(`ALTER TABLE bank_accounts ADD COLUMN holderName TEXT;`);
         }
+        if (!cols.includes('bankName')) {
+          console.log('[localDatabase] Adding missing column bankName to bank_accounts table');
+          await execSql(`ALTER TABLE bank_accounts ADD COLUMN bankName TEXT;`);
+        }
+        if (!cols.includes('accountNumber')) {
+          console.log('[localDatabase] Adding missing column accountNumber to bank_accounts table');
+          await execSql(`ALTER TABLE bank_accounts ADD COLUMN accountNumber TEXT;`);
+        }
+        if (!cols.includes('chartAccountId')) {
+          console.log('[localDatabase] Adding missing column chartAccountId to bank_accounts table');
+          await execSql(`ALTER TABLE bank_accounts ADD COLUMN chartAccountId TEXT;`);
+        }
+        if (!cols.includes('openingBalance')) {
+          console.log('[localDatabase] Adding missing column openingBalance to bank_accounts table');
+          await execSql(`ALTER TABLE bank_accounts ADD COLUMN openingBalance TEXT;`);
+        }
+        if (!cols.includes('contactNumber')) {
+          console.log('[localDatabase] Adding missing column contactNumber to bank_accounts table');
+          await execSql(`ALTER TABLE bank_accounts ADD COLUMN contactNumber TEXT;`);
+        }
+        if (!cols.includes('bankAddress')) {
+          console.log('[localDatabase] Adding missing column bankAddress to bank_accounts table');
+          await execSql(`ALTER TABLE bank_accounts ADD COLUMN bankAddress TEXT;`);
+        }
+        // Legacy 'name' column used by older schema versions (ensure exists for compatibility)
+        if (!cols.includes('name')) {
+          console.log('[localDatabase] Adding missing legacy column name to bank_accounts table');
+          await execSql(`ALTER TABLE bank_accounts ADD COLUMN name TEXT;`);
+        }
+        if (!cols.includes('createdBy')) {
+          console.log('[localDatabase] Adding missing column createdBy to bank_accounts table');
+          await execSql(`ALTER TABLE bank_accounts ADD COLUMN createdBy TEXT;`);
+        }
+        if (!cols.includes('shopId')) {
+          console.log('[localDatabase] Adding missing column shopId to bank_accounts table');
+          await execSql(`ALTER TABLE bank_accounts ADD COLUMN shopId TEXT;`);
+        }
+        if (!cols.includes('syncedAt')) {
+          console.log('[localDatabase] Adding missing column syncedAt to bank_accounts table');
+          await execSql(`ALTER TABLE bank_accounts ADD COLUMN syncedAt TEXT;`);
+        }
+      } catch (e) {
+        console.warn('[localDatabase] Failed to ensure bank_accounts columns exist:', e);
+      }
+
+      // Create warehouses table
+      await execSql(
+        `CREATE TABLE IF NOT EXISTS warehouses (
+          id TEXT PRIMARY KEY NOT NULL,
+          serverId TEXT,
+          name TEXT NOT NULL,
+          code TEXT,
+          description TEXT,
+          syncError TEXT,
+          syncedAt INTEGER,
+          createdAt TEXT,
+          updatedAt TEXT,
+          synced INTEGER DEFAULT 0
+        );`
+      );
+      
+      // Ensure warehouses table has syncedAt column (migration)
+      try {
+        const info: any = await execSql(`PRAGMA table_info('warehouses');`);
+        const cols: string[] = [];
+        for (let i = 0; i < info.rows.length; i++) cols.push(info.rows.item(i).name);
+        if (!cols.includes('syncedAt')) {
+          console.log('[localDatabase] Adding missing column syncedAt to warehouses table');
+          await execSql(`ALTER TABLE warehouses ADD COLUMN syncedAt INTEGER;`);
+        }
+      } catch (e) {
+        console.warn('[localDatabase] Failed to ensure warehouses.syncedAt exists:', e);
       }
       
-      if (needsProductsRecreate) {
-        // Drop and recreate the products table with correct schema
-        await execSql(`DROP TABLE IF EXISTS products;`);
-        console.log('[localDatabase] Dropped old products table');
-      }
+      // Create categories table
+      await execSql(
+        `CREATE TABLE IF NOT EXISTS categories (
+          id TEXT PRIMARY KEY NOT NULL,
+          name TEXT NOT NULL,
+          syncedAt INTEGER
+        );`
+      );
       
-      dbInitialized = true;
+      console.log('[localDatabase] ✓ Database initialized successfully');
+    } catch (error) {
+      console.error('[localDatabase] Failed to initialize database:', error);
+      throw error;
+    } finally {
+      // Clear the promise so future calls can proceed
+      initDBPromise = null;
     }
-    
-    await execSql(
-      `CREATE TABLE IF NOT EXISTS invoices (
-        id TEXT PRIMARY KEY NOT NULL,
-        serverId TEXT,
-        invoiceNo TEXT,
-        customerId TEXT,
-        customerName TEXT,
-        customerType TEXT,
-        categoryId TEXT,
-        warehouseId TEXT,
-        warehouseName TEXT,
-        refNumber TEXT,
-        deliveryStatus TEXT,
-        issueDate TEXT,
-        dueDate TEXT,
-        subTotal TEXT,
-        discountTotal TEXT,
-        taxTotal TEXT,
-        grandTotal TEXT,
-        dueAmount TEXT,
-        status TEXT,
-        createdAt TEXT,
-        updatedAt TEXT,
-        synced INTEGER DEFAULT 0
-      );`
-    );
-    
-    // Create products table
-    await execSql(
-      `CREATE TABLE IF NOT EXISTS products (
-        id INTEGER PRIMARY KEY NOT NULL,
-        label TEXT NOT NULL,
-        name TEXT,
-        sku TEXT,
-        sale_price TEXT,
-        purchase_price TEXT,
-        description TEXT,
-        type TEXT,
-        category_id INTEGER,
-        unit_id INTEGER,
-        syncedAt INTEGER
-      );`
-    );
-    
-    // Create index on product label for faster search
-    await execSql(
-      `CREATE INDEX IF NOT EXISTS idx_products_label ON products(label);`
-    );
-    
-    // Create categories table
-    await execSql(
-      `CREATE TABLE IF NOT EXISTS categories (
-        id INTEGER PRIMARY KEY NOT NULL,
-        name TEXT NOT NULL,
-        syncedAt INTEGER
-      );`
-    );
-    
-    // Create index on category name for faster search
-    await execSql(
-      `CREATE INDEX IF NOT EXISTS idx_categories_name ON categories(name);`
-    );
-    
-    // Create warehouses table
-    await execSql(
-      `CREATE TABLE IF NOT EXISTS warehouses (
-        id INTEGER PRIMARY KEY NOT NULL,
-        name TEXT NOT NULL,
-        syncedAt INTEGER
-      );`
-    );
-    
-    // Create index on warehouse name for faster search
-    await execSql(
-      `CREATE INDEX IF NOT EXISTS idx_warehouses_name ON warehouses(name);`
-    );
-    
-    // Create dealers table
-    await execSql(
-      `CREATE TABLE IF NOT EXISTS dealers (
-        id INTEGER PRIMARY KEY NOT NULL,
-        name TEXT NOT NULL,
-        syncedAt INTEGER
-      );`
-    );
-    
-    // Create index on dealer name for faster search
-    await execSql(
-      `CREATE INDEX IF NOT EXISTS idx_dealers_name ON dealers(name);`
-    );
-    
-    // Create bank_accounts table
-    await execSql(
-      `CREATE TABLE IF NOT EXISTS bank_accounts (
-        id INTEGER PRIMARY KEY NOT NULL,
-        warehouseId INTEGER NOT NULL,
-        holderName TEXT NOT NULL,
-        bankName TEXT NOT NULL,
-        accountNumber TEXT NOT NULL,
-        chartAccountId INTEGER,
-        openingBalance REAL DEFAULT 0,
-        contactNumber TEXT,
-        bankAddress TEXT,
-        createdBy INTEGER,
-        shopId INTEGER,
-        createdAt TEXT,
-        updatedAt TEXT,
-        syncedAt INTEGER
-      );`
-    );
-    
-    // Create index on bank_accounts for faster filtering by warehouse
-    await execSql(
-      `CREATE INDEX IF NOT EXISTS idx_bank_accounts_warehouse ON bank_accounts(warehouseId);`
-    );
-    
-    // Create invoice_items table for storing invoice line items
-    await execSql(
-      `CREATE TABLE IF NOT EXISTS invoice_items (
-        id TEXT PRIMARY KEY NOT NULL,
-        invoiceId TEXT NOT NULL,
-        productId INTEGER NOT NULL,
-        productName TEXT,
-        quantity REAL NOT NULL,
-        price REAL NOT NULL,
-        discount REAL DEFAULT 0,
-        tax REAL DEFAULT 0,
-        description TEXT,
-        shopId INTEGER,
-        createdAt TEXT,
-        FOREIGN KEY (invoiceId) REFERENCES invoices(id) ON DELETE CASCADE
-      );`
-    );
-    
-    // Create index on invoice_items for faster filtering by invoice
-    await execSql(
-      `CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice ON invoice_items(invoiceId);`
-    );
-    
-    // Create invoice_payments table for storing payment details
-    await execSql(
-      `CREATE TABLE IF NOT EXISTS invoice_payments (
-        id TEXT PRIMARY KEY NOT NULL,
-        invoiceId TEXT NOT NULL,
-        amount REAL NOT NULL,
-        accountId INTEGER NOT NULL,
-        accountName TEXT,
-        paymentMethod INTEGER,
-        date TEXT NOT NULL,
-        reference TEXT,
-        createdAt TEXT,
-        FOREIGN KEY (invoiceId) REFERENCES invoices(id) ON DELETE CASCADE
-      );`
-    );
-    
-    // Create index on invoice_payments for faster filtering by invoice
-    await execSql(
-      `CREATE INDEX IF NOT EXISTS idx_invoice_payments_invoice ON invoice_payments(invoiceId);`
-    );
-    
-    if (verboseLogging) console.info('[localDatabase] DB initialized');
-  } catch (error) {
-    console.error('[localDatabase] Failed to initialize DB:', error);
-    throw error;
-  }
+  })();
+
+  return initDBPromise;
 }
 
 export async function addCustomer(payload: Partial<CustomerRow>) {
@@ -691,10 +830,12 @@ export async function upsertCustomer(payload: Partial<CustomerRow> & { serverId?
 
 // Invoice functions
 export async function addInvoice(payload: Partial<InvoiceRow>) {
+  let row: InvoiceRow | null = null;
+  
   try {
     const id = payload.id ?? `invoice_${Date.now()}`;
     const now = new Date().toISOString();
-    const row: InvoiceRow = {
+    row = {
       id,
       serverId: payload.serverId ?? null,
       invoiceNo: payload.invoiceNo ?? "",
@@ -713,15 +854,17 @@ export async function addInvoice(payload: Partial<InvoiceRow>) {
       createdAt: payload.createdAt ?? now,
       updatedAt: now,
       synced: payload.synced ?? 0,
+      syncStatus: payload.syncStatus ?? 'UNSYNCED',
+      syncError: payload.syncError ?? null,
     };
 
     const result = await execSql(
-      `INSERT INTO invoices (id, serverId, invoiceNo, customerId, customerName, warehouseId, warehouseName, issueDate, dueDate, subTotal, discountTotal, taxTotal, grandTotal, dueAmount, status, createdAt, updatedAt, synced)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
+      `INSERT INTO invoices (id, serverId, invoiceNo, customerId, customerName, warehouseId, warehouseName, issueDate, dueDate, subTotal, discountTotal, taxTotal, grandTotal, dueAmount, status, createdAt, updatedAt, synced, syncStatus, syncError)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
       [
         row.id,
         row.serverId,
-        row.invoiceNo,  // This was missing!
+        row.invoiceNo,
         row.customerId,
         row.customerName,
         row.warehouseId,
@@ -737,21 +880,22 @@ export async function addInvoice(payload: Partial<InvoiceRow>) {
         row.createdAt,
         row.updatedAt,
         row.synced,
+        row.syncStatus,
+        row.syncError,
       ]
     );
     
-    console.log('[localDatabase] INSERT result for', row.invoiceNo, ':', result);
-    
-    // Immediately verify using the same database connection
-    try {
-      const verifyResult: any = await execSql(`SELECT COUNT(*) as cnt FROM invoices;`);
-      console.log('[localDatabase] Total invoices after insert:', verifyResult.rows.length > 0 ? verifyResult.rows.item(0) : 'no result');
-    } catch (e) {
-      console.error('[localDatabase] Verification query failed:', e);
-    }
-
+    console.log('[localDatabase] ✓ Invoice inserted:', row.invoiceNo);
     return row;
-  } catch (error) {
+  } catch (error: any) {
+    // If we get "no column named syncStatus" error, it means initDB didn't complete properly
+    // This should be rare since we check and recreate the schema in initDB
+    if (error?.message?.includes('no column named') || error?.message?.includes('no such column')) {
+      console.error('[localDatabase] ⚠️  CRITICAL: Invoices table schema incomplete!');
+      console.error('[localDatabase] This should have been fixed in initDB(). Error:', error);
+      console.error('[localDatabase] Try: Restart the app, or reinstall if problem persists');
+    }
+    
     console.error('[localDatabase] addInvoice failed:', error);
     throw error;
   }
@@ -793,6 +937,8 @@ export async function updateInvoice(localId: string, patch: Partial<InvoiceRow>)
   if (patch.status !== undefined) { parts.push("status = ?"); args.push(patch.status); }
   if (patch.synced !== undefined) { parts.push("synced = ?"); args.push(patch.synced); }
   if (patch.serverId !== undefined) { parts.push("serverId = ?"); args.push(patch.serverId); }
+  if (patch.syncStatus !== undefined) { parts.push("syncStatus = ?"); args.push(patch.syncStatus); }
+  if (patch.syncError !== undefined) { parts.push("syncError = ?"); args.push(patch.syncError); }
 
   if (parts.length === 0) return;
 
@@ -808,7 +954,7 @@ export async function deleteInvoice(localId: string) {
 }
 
 export async function getUnsyncedInvoices(): Promise<InvoiceRow[]> {
-  const res: any = await execSql(`SELECT * FROM invoices WHERE synced = 0 ORDER BY createdAt ASC;`);
+  const res: any = await execSql(`SELECT * FROM invoices WHERE syncStatus = 'UNSYNCED' ORDER BY createdAt ASC;`);
   const output: InvoiceRow[] = [];
   for (let i = 0; i < res.rows.length; i++) output.push(res.rows.item(i));
   return output;
@@ -817,8 +963,16 @@ export async function getUnsyncedInvoices(): Promise<InvoiceRow[]> {
 export async function markInvoiceAsSynced(localId: string, serverId?: string) {
   const now = new Date().toISOString();
   await execSql(
-    `UPDATE invoices SET synced = 1, serverId = ?, updatedAt = ? WHERE id = ?;`,
+    `UPDATE invoices SET synced = 1, syncStatus = 'SYNCED', serverId = ?, syncError = NULL, updatedAt = ? WHERE id = ?;`,
     [serverId ?? null, now, localId]
+  );
+}
+
+export async function markInvoiceAsFailed(localId: string, errorMessage: string) {
+  const now = new Date().toISOString();
+  await execSql(
+    `UPDATE invoices SET syncStatus = 'FAILED', syncError = ?, updatedAt = ? WHERE id = ?;`,
+    [errorMessage, now, localId]
   );
 }
 
@@ -832,18 +986,18 @@ export async function upsertInvoice(invoice: Partial<InvoiceRow>): Promise<strin
       const res: any = await execSql(`SELECT id FROM invoices WHERE serverId = ?;`, [invoice.serverId]);
       if (res.rows.length > 0) {
         const localId = res.rows.item(0).id;
-        await updateInvoice(localId, { ...invoice, synced: 1 });
+        await updateInvoice(localId, { ...invoice, synced: 1, syncStatus: 'SYNCED' });
         return localId;
       }
     }
     if (invoice.id) {
       const existing = await getInvoiceById(invoice.id);
       if (existing) {
-        await updateInvoice(invoice.id, { ...invoice, synced: 1 });
+        await updateInvoice(invoice.id, { ...invoice, synced: 1, syncStatus: 'SYNCED' });
         return invoice.id;
       }
     }
-    const row = await addInvoice({ ...invoice, synced: 1 });
+    const row = await addInvoice({ ...invoice, synced: 1, syncStatus: 'SYNCED' });
     return row.id;
   } catch (error) {
     console.error('[localDatabase] upsertInvoice failed:', error, 'Invoice:', invoice);
@@ -946,34 +1100,94 @@ export async function saveBankAccounts(bankAccounts: Array<{
   try {
     // Clear existing bank accounts
     await execSql(`DELETE FROM bank_accounts;`);
-    
-    // Insert new bank accounts
-    for (const account of bankAccounts) {
-      await execSql(
-        `INSERT OR REPLACE INTO bank_accounts (
-          id, warehouseId, holderName, bankName, accountNumber, 
-          chartAccountId, openingBalance, contactNumber, bankAddress, 
-          createdBy, shopId, createdAt, updatedAt, syncedAt
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);`,
-        [
-          account.id,
-          account.warehouse_id,
-          account.holder_name,
-          account.bank_name,
-          account.account_number,
-          account.chart_account_id,
-          account.opening_balance,
-          account.contact_number,
-          account.bank_address,
-          account.created_by,
-          account.shop_id,
-          account.created_at,
-          account.updated_at,
-          syncedAt
-        ]
-      );
+
+    // Read current table columns so we can insert only into existing columns
+    const info: any = await execSql(`PRAGMA table_info('bank_accounts');`);
+    const cols: string[] = [];
+    for (let i = 0; i < info.rows.length; i++) cols.push(info.rows.item(i).name);
+
+    // Build insert column list based on available columns (handles legacy 'name' column)
+    const insertCols: string[] = [];
+    const pushIf = (c: string) => { if (cols.includes(c)) insertCols.push(c); };
+
+    pushIf('id');
+    pushIf('warehouseId');
+    pushIf('holderName');
+    pushIf('bankName');
+    // legacy column that caused NOT NULL failures in some DBs
+    pushIf('name');
+    pushIf('accountNumber');
+    pushIf('chartAccountId');
+    pushIf('openingBalance');
+    pushIf('contactNumber');
+    pushIf('bankAddress');
+    pushIf('createdBy');
+    pushIf('shopId');
+    pushIf('createdAt');
+    pushIf('updatedAt');
+    pushIf('syncedAt');
+
+    // Guard: if no insertable columns detected, fall back to default known columns
+    if (insertCols.length === 0) {
+      console.warn('[localDatabase.saveBankAccounts] No insertable columns detected. Falling back to default column set');
+      insertCols.push('id','warehouseId','holderName','bankName','accountNumber','chartAccountId','openingBalance','contactNumber','bankAddress','createdBy','shopId','createdAt','updatedAt','syncedAt');
     }
-    
+
+    const placeholders = insertCols.map(() => '?').join(', ');
+    const sql = `INSERT OR REPLACE INTO bank_accounts (${insertCols.join(', ')}) VALUES (${placeholders});`;
+
+    // Debug logging for troubleshooting SQL construction errors
+    console.log('[localDatabase.saveBankAccounts] Detected table columns:', cols.join(', '));
+    console.log('[localDatabase.saveBankAccounts] Using insertCols:', insertCols.join(', '));
+    console.log('[localDatabase.saveBankAccounts] SQL:', sql);
+
+    // Insert each account mapping to available columns
+    for (const [idx, account] of bankAccounts.entries()) {
+      let values = insertCols.map((col) => {
+        switch (col) {
+          case 'id': return account.id;
+          case 'warehouseId': return String(account.warehouse_id);
+          case 'holderName': return account.holder_name;
+          case 'bankName': return account.bank_name;
+          case 'name': // legacy: prefer holder_name, fall back to bank_name, ensure non-empty to satisfy NOT NULL
+            return (account.holder_name || account.bank_name || '').toString();
+          case 'accountNumber': return account.account_number;
+          case 'chartAccountId': return String(account.chart_account_id);
+          case 'openingBalance': return String(account.opening_balance);
+          case 'contactNumber': return account.contact_number;
+          case 'bankAddress': return account.bank_address;
+          case 'createdBy': return String(account.created_by);
+          case 'shopId': return account.shop_id;
+          case 'createdAt': return account.created_at;
+          case 'updatedAt': return account.updated_at;
+          case 'syncedAt': return String(syncedAt);
+          default: return null;
+        }
+      });
+
+      // Ensure values length matches insertCols length to avoid SQL syntax errors
+      if (values.length !== insertCols.length) {
+        console.warn('[localDatabase.saveBankAccounts] Mismatch between insertCols and values lengths', { insertColsLength: insertCols.length, valuesLength: values.length });
+        // If shorter, pad with empty strings; if longer, truncate
+        if (values.length < insertCols.length) {
+          values = values.concat(new Array(insertCols.length - values.length).fill(''));
+        } else if (values.length > insertCols.length) {
+          values = values.slice(0, insertCols.length);
+        }
+      }
+
+      if (verboseLogging || idx === 0) {
+        console.log('[localDatabase.saveBankAccounts] inserting values sample (first 10):', values.slice(0, 10));
+      }
+
+      try {
+        await execSql(sql, values);
+      } catch (e) {
+        console.error('[localDatabase.saveBankAccounts] Failed to insert account:', account, 'SQL:', sql, 'Values length:', values.length, 'InsertCols length:', insertCols.length, 'Error:', e);
+        throw e;
+      }
+    }
+
     if (verboseLogging) console.info(`[localDatabase] Saved ${bankAccounts.length} bank accounts`);
   } catch (error) {
     console.error('[localDatabase] saveBankAccounts failed:', error);
@@ -1130,6 +1344,7 @@ export default {
   deleteInvoice,
   getUnsyncedInvoices,
   markInvoiceAsSynced,
+  markInvoiceAsFailed,
   clearAllInvoices,
   upsertInvoice,
   updateInvoicesCustomerId,

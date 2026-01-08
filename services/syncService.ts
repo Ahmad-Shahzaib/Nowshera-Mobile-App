@@ -230,10 +230,16 @@ export async function syncUnsyncedInvoices(): Promise<SyncResult> {
 
     const unsynced = await localDB.getUnsyncedInvoices();
     if (unsynced.length === 0) {
+      console.log('[syncService] No unsynced invoices found');
       return { success: true, syncedCount: 0 };
     }
 
     console.log(`[syncService] Found ${unsynced.length} unsynced invoices to process`);
+    
+    // Log details of unsynced invoices
+    for (const inv of unsynced) {
+      console.log(`[syncService]   - Invoice ${inv.invoiceNo}: customerId=${inv.customerId}, syncStatus=${inv.syncStatus}`);
+    }
 
     const axios = getAxiosInstance();
     let syncedCount = 0;
@@ -281,6 +287,8 @@ export async function syncUnsyncedInvoices(): Promise<SyncResult> {
         // Get invoice items and payments from local DB
         const items = await localDB.getInvoiceItems(row.id);
         const payments = await localDB.getInvoicePayments(row.id);
+        
+        console.log(`[syncService] Invoice ${row.invoiceNo}: ${items.length} items, ${payments.length} payments`);
 
         // Resolve bank account IDs to chart_of_accounts_id for payments
         const resolvedPayments = await Promise.all(
@@ -323,8 +331,10 @@ export async function syncUnsyncedInvoices(): Promise<SyncResult> {
           payments: resolvedPayments,
         };
 
-        console.log(`[syncService] Syncing invoice ${row.invoiceNo} to server (customer ID: ${resolvedCustomerId})...`);
+        console.log(`[syncService] Syncing invoice ${row.invoiceNo} to server with payload:`, payload);
         const response = await axios.post('/invoice/store', payload);
+        
+        console.log(`[syncService] API response for ${row.invoiceNo}:`, { status: response.data?.status, data: response.data?.data });
         
         if (response.data?.status) {
           const serverId = response.data?.data?.id || response.data?.data?.invoice_id;
@@ -332,13 +342,22 @@ export async function syncUnsyncedInvoices(): Promise<SyncResult> {
             await localDB.markInvoiceAsSynced(row.id, String(serverId));
             syncedCount++;
             console.log(`[syncService] ✓ Invoice ${row.invoiceNo} synced successfully (server ID: ${serverId})`);
+          } else {
+            console.warn(`[syncService] ⚠️ Invoice ${row.invoiceNo} response had no ID: ${JSON.stringify(response.data?.data)}`);
+            errors.push(`${row.invoiceNo}: No ID returned from server`);
           }
         } else {
           throw new Error('API returned status false');
         }
       } catch (error: any) {
         const errorMsg = error.response?.data?.message || error.message || 'Unknown error';
-        console.error(`[syncService] ✗ Failed to sync invoice ${row.invoiceNo}:`, errorMsg);
+        const errorCode = error.response?.status || 0;
+        
+        // Mark invoice as FAILED - do NOT auto-retry infinitely
+        // User must manually fix the issue (e.g., correct API 422 validation error)
+        await localDB.markInvoiceAsFailed(row.id, `${errorMsg} (HTTP ${errorCode})`);
+        
+        console.error(`[syncService] ✗ Failed to sync invoice ${row.invoiceNo}: ${errorMsg}`);
         errors.push(`${row.invoiceNo}: ${errorMsg}`);
       }
     }
@@ -350,7 +369,7 @@ export async function syncUnsyncedInvoices(): Promise<SyncResult> {
       resultMessage += `${skipped.length} invoices skipped (customer not synced). `;
     }
     if (errors.length > 0) {
-      console.error(`[syncService] ✗ ${errors.length} invoices failed to sync`);
+      console.error(`[syncService] ✗ ${errors.length} invoices marked as FAILED (will NOT auto-retry)`);
       resultMessage += `${errors.length} invoices failed: ${errors.join('; ')}`;
     }
 

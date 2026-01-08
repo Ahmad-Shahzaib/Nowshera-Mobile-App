@@ -59,7 +59,7 @@ export default function CreateInvoice() {
   const tint = useThemeColor({}, 'tint');
   const icon = useThemeColor({}, 'icon');
   const router = useRouter();
-  const { customers, dealers } = useSync();
+  const { customers, dealers, refresh } = useSync();
   const isOnline = useNetwork();
 
   // Refs for scrolling
@@ -329,8 +329,9 @@ export default function CreateInvoice() {
   // Filter bank accounts when warehouse changes
   useEffect(() => {
     if (selectedWarehouse && bankAccounts.length > 0) {
+      // Coerce both sides to numbers to avoid string/number mismatches from DB
       const filtered = bankAccounts.filter(
-        account => account.warehouseId === selectedWarehouse.id
+        account => Number(account.warehouseId) === Number(selectedWarehouse.id)
       );
       console.log('[CreateInvoice] Filtering bank accounts for warehouse:', selectedWarehouse.id, filtered);
       setFilteredBankAccounts(filtered);
@@ -771,6 +772,9 @@ export default function CreateInvoice() {
       const result = await invoiceService.createInvoice(invoiceData);
 
       if (result) {
+        // Refresh sync context to update unsynced count (important for offline invoices)
+        await refresh();
+        
         Alert.alert(
           'Success',
           'Invoice created successfully!',
@@ -897,7 +901,8 @@ export default function CreateInvoice() {
     onUpdate,
     onRemove,
     canRemove,
-    onAccountSelect
+    onAccountSelect,
+    filteredBankAccounts
   }: {
     payment: PaymentDetail;
     index: number;
@@ -905,7 +910,19 @@ export default function CreateInvoice() {
     onRemove: (id: string) => void;
     canRemove: boolean;
     onAccountSelect: (index: number) => void;
+    filteredBankAccounts: BankAccountRow[];
   }) => {
+    const getAccountLabel = (acctValue: string | undefined) => {
+      if (!acctValue) return 'Select Account';
+      const match = acctValue.match(/^account-(\d+)$/);
+      if (!match) return acctValue;
+      const accId = parseInt(match[1], 10);
+      const acc = filteredBankAccounts?.find(a => a.id === accId);
+      return acc ? `${acc.bankName} (${acc.accountNumber})` : acctValue;
+    };
+
+    const displayAccountLabel = getAccountLabel(payment.account);
+
     return (
       <View style={stylesLocal.paymentTableRow}>
         <Text style={[stylesLocal.tableCell, stylesLocal.tableCellIndex]}>{index + 1}</Text>
@@ -922,7 +939,7 @@ export default function CreateInvoice() {
           onPress={() => onAccountSelect(index)}
         >
           <Text style={[stylesLocal.tableCellText, { color: payment.account ? text : icon }]} numberOfLines={1}>
-            {payment.account || 'Select Account'}
+            {displayAccountLabel}
           </Text>
         </TouchableOpacity>
         {/* <TextInput
@@ -1652,6 +1669,7 @@ export default function CreateInvoice() {
                           setSelectedPaymentIndex(paymentIndex);
                           setShowAccountModal(true);
                         }}
+                        filteredBankAccounts={filteredBankAccounts}
                       />
                     ))}
                     {PaymentListFooterComponent}
@@ -1745,28 +1763,37 @@ export default function CreateInvoice() {
             title="Select Account"
             options={filteredBankAccounts.length > 0
               ? filteredBankAccounts.map((acc) => ({
-                id: `${acc.bankName}`,
-                label: `${acc.bankName} - ${acc.holderName} (${acc.accountNumber})`
+                id: `${acc.id}`,
+                label: `${acc.bankName} (${acc.accountNumber})`
               }))
               : [{ id: 'no-accounts', label: 'No bank accounts available for this warehouse' }]
             }
             onClose={() => setShowAccountModal(false)}
-            onSelect={(account) => {
+            onSelect={(accountId) => {
               // Don't allow selection if no accounts
-              if (account === 'No bank accounts available for this warehouse') {
+              if (accountId === 'no-accounts') return;
+
+              // Find the selected account record
+              const selectedAcc = filteredBankAccounts.find(a => String(a.id) === String(accountId));
+              if (!selectedAcc) {
+                setShowAccountModal(false);
                 return;
               }
+
+              // Store internal account marker so we can map it later (format: account-<id>)
+              const accountValue = `account-${selectedAcc.id}`;
 
               // Check if we're in add payment mode (selectedPaymentIndex is -1 or invalid)
               if (selectedPaymentIndex < 0 || selectedPaymentIndex >= paymentDetails.length) {
                 // Update temp payment for new payment being added
-                updateTempPayment('account', account);
+                updateTempPayment('account', accountValue);
               } else {
                 // Update existing payment in list
                 const updatedPayments = [...paymentDetails];
-                updatedPayments[selectedPaymentIndex].account = account;
+                updatedPayments[selectedPaymentIndex].account = accountValue;
                 setPaymentDetails(updatedPayments);
               }
+
               setShowAccountModal(false);
             }}
           />
@@ -1995,7 +2022,15 @@ export default function CreateInvoice() {
                     hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
                   >
                     <Text style={[stylesLocal.inputText, { color: tempPayment.account ? text : icon }]}>
-                      {tempPayment.account || 'Select Account'}
+                      {(() => {
+                        const v = tempPayment.account;
+                        if (!v) return 'Select Account';
+                        const m = v.match(/^account-(\d+)$/);
+                        if (!m) return v;
+                        const accId = parseInt(m[1], 10);
+                        const acc = filteredBankAccounts.find(a => a.id === accId);
+                        return acc ? `${acc.bankName} (${acc.accountNumber})` : v;
+                      })()}
                     </Text>
                     <MaterialIcons name="keyboard-arrow-down" size={resp.fontSize(20)} color={icon} />
                   </TouchableOpacity>

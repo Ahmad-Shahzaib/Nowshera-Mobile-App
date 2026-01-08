@@ -44,8 +44,12 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
     setCustomers(rows);
     const dealersData = await localDB.getDealers();
     setDealers(dealersData);
+    // Count BOTH unsynced customers AND unsynced invoices for auto-sync trigger
     const unsynced = await localDB.getUnsynced();
-    setUnsyncedCount(unsynced.length);
+    const unsyncedInvoices = await localDB.getUnsyncedInvoices();
+    const totalUnsynced = unsynced.length + unsyncedInvoices.length;
+    console.log(`[SyncContext] Unsynced count: ${unsynced.length} customers + ${unsyncedInvoices.length} invoices = ${totalUnsynced} total`);
+    setUnsyncedCount(totalUnsynced);
   }, []);
 
   useEffect(() => {

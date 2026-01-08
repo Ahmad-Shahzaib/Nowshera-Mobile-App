@@ -30,6 +30,9 @@ export default function Customers() {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // Local unsynced customers count (from local DB)
+  const [unsyncedLocalCount, setUnsyncedLocalCount] = useState<number>(0);
+
   // Pagination state
   const PAGE_SIZE = 10;
   const [page, setPage] = useState(1);
@@ -46,6 +49,12 @@ export default function Customers() {
       const data = await customerService.getAllCustomers();
       console.log('Fetched customers:', data); // Debug: Check if balance is included
       setCustomers(data);
+      try {
+        const u = await customerService.getUnsyncedCount();
+        setUnsyncedLocalCount(u);
+      } catch (e) {
+        setUnsyncedLocalCount(0);
+      }
     } catch (err: any) {
       console.error('Error fetching customers:', err);
       setError(err.message || 'Failed to load customers');
@@ -72,6 +81,13 @@ export default function Customers() {
     // Also trigger sync if we have unsynced items
     if (unsyncedCount > 0 && isOnline) {
       await syncNow();
+      // refresh local unsynced count after sync
+      try {
+        const u = await customerService.getUnsyncedCount();
+        setUnsyncedLocalCount(u);
+      } catch (e) {
+        setUnsyncedLocalCount(0);
+      }
     }
   }, [fetchCustomers, unsyncedCount, isOnline, syncNow]);
 
@@ -91,6 +107,12 @@ export default function Customers() {
     if (result.success) {
       Alert.alert('Success', `Synced ${result.syncedCount} customer(s)`);
       await fetchCustomers(false);
+      try {
+        const u = await customerService.getUnsyncedCount();
+        setUnsyncedLocalCount(u);
+      } catch (e) {
+        setUnsyncedLocalCount(0);
+      }
     } else {
       Alert.alert('Sync Failed', result.error || 'Failed to sync data');
     }
@@ -204,6 +226,24 @@ export default function Customers() {
         >
           <ThemedText type="defaultSemiBold" style={styles.addButtonText}>+ Add Customer</ThemedText>
         </TouchableOpacity>
+      </View>
+
+      <View style={{ marginTop: 8, flexDirection: 'row', alignItems: 'center' }}>
+        <View style={styles.statBadge}>
+          <ThemedText style={styles.statText}>{customers.length}</ThemedText>
+          <ThemedText style={[styles.statText, { fontSize: 12, marginLeft: 6 }]}>Customers</ThemedText>
+        </View>
+
+        {unsyncedLocalCount > 0 && (
+          <View style={[styles.unsyncedBadge, { marginLeft: 12 }]}>
+            <ThemedText style={styles.unsyncedText}>{unsyncedLocalCount} unsynced</ThemedText>
+          </View>
+        )}
+        {unsyncedCount > 0 && isOnline && (
+          <View style={[styles.syncInfo, { marginLeft: 12 }] }>
+            <ThemedText style={styles.syncInfoText}>{unsyncedCount} pending sync</ThemedText>
+          </View>
+        )}
       </View>
 
       {/* Sync Status Bar */}
@@ -389,6 +429,32 @@ const styles = StyleSheet.create({
   unsyncedText: {
     fontSize: 11,
     color: '#92400e',
+    fontWeight: '600',
+  },
+  statBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#eef2ff',
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    borderRadius: 16,
+  },
+  statText: {
+    color: '#1e3a8a',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  syncInfo: {
+    backgroundColor: '#e6fffa',
+    paddingVertical: 4,
+    paddingHorizontal: 8,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#34d399',
+  },
+  syncInfoText: {
+    color: '#065f46',
+    fontSize: 12,
     fontWeight: '600',
   },
   syncButton: {

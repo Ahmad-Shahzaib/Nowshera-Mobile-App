@@ -485,9 +485,21 @@ export default function InvoiceScreen() {
         return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
       }
 
-      // If one is unsynced and other is synced, unsynced comes first
-      if (a.synced === 0 && b.synced !== 0) return -1;
-      if (a.synced !== 0 && b.synced === 0) return 1;
+      // Helper to get sync status (support both old synced field and new syncStatus field)
+      const getSyncStatus = (invoice: any) => {
+        if (invoice.syncStatus) return invoice.syncStatus;
+        return invoice.synced === 0 ? 'UNSYNCED' : 'SYNCED';
+      };
+
+      const aStatus = getSyncStatus(a);
+      const bStatus = getSyncStatus(b);
+
+      // Priority order: UNSYNCED > FAILED > SYNCED
+      const statusPriority: Record<string, number> = { UNSYNCED: 0, FAILED: 1, SYNCED: 2 };
+      const aPriority = statusPriority[aStatus] ?? 2;
+      const bPriority = statusPriority[bStatus] ?? 2;
+
+      if (aPriority !== bPriority) return aPriority - bPriority;
 
       // If both have same sync status, sort by creation date (newest first)
       return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();

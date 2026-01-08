@@ -59,6 +59,10 @@ export async function syncBankAccounts(): Promise<{ success: boolean; count: num
     
     const bankAccounts = response.data.data;
     console.log(`[bankAccountService] Received ${bankAccounts.length} bank accounts from server`);
+
+    // Log a small sample to help debugging payload format
+    const sample = bankAccounts.slice(0, 5).map(b => ({ id: b.id, bank_name: b.bank_name, account_number: b.account_number }));
+    console.log('[bankAccountService] Sample accounts:', sample);
     
     const syncedAt = Date.now();
     await localDB.saveBankAccounts(bankAccounts, syncedAt);

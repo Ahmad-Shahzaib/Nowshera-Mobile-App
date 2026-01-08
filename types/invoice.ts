@@ -112,6 +112,8 @@ export interface Invoice {
   createdAt: string;
   updatedAt: string;
   synced: number;
+  syncStatus?: 'UNSYNCED' | 'SYNCED' | 'FAILED';
+  syncError?: string | null;
 }
 
 export interface InvoiceRow {
@@ -133,4 +135,6 @@ export interface InvoiceRow {
   createdAt: string;
   updatedAt: string;
   synced: number;
+  syncStatus?: 'UNSYNCED' | 'SYNCED' | 'FAILED';
+  syncError?: string | null;
 }
