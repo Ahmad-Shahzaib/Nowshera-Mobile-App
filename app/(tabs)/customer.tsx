@@ -17,6 +17,7 @@ import { ThemedView } from '@/components/themed-view';
 import { Colors } from '@/constants/theme';
 import { useSync } from '@/context/SyncContext';
 import { customerService } from '@/services/customerService';
+import localDB from '@/services/localDatabase';
 import { Customer } from '@/types/customer';
 
 export default function Customers() {
@@ -234,6 +235,40 @@ export default function Customers() {
             <ThemedText style={styles.syncButtonText}>🔄 Sync Now</ThemedText>
           </TouchableOpacity>
         )}
+
+        {/* Reset local DB button (destructive) */}
+        <TouchableOpacity
+          style={styles.resetButton}
+          onPress={() => {
+            Alert.alert(
+              'Reset Local DB',
+              'This will delete ALL local data and close the database. This cannot be undone. Are you sure?',
+              [
+                { text: 'Cancel', style: 'cancel' },
+                {
+                  text: 'Reset',
+                  style: 'destructive',
+                  onPress: async () => {
+                    try {
+                      await localDB.dropAllTables();
+                      await localDB.closeDatabase();
+                      // Re-initialize DB so app remains in a usable state (empty tables)
+                      await localDB.initDB();
+                      Alert.alert('Success', 'Local database cleared and re-initialized.');
+                      await fetchCustomers(false);
+                    } catch (err: any) {
+                      console.error('Reset DB error:', err);
+                      Alert.alert('Error', err?.message || 'Failed to reset DB');
+                    }
+                  },
+                },
+              ]
+            );
+          }}
+          activeOpacity={0.8}
+        >
+          <ThemedText style={styles.resetButtonText}>🧨 Reset DB</ThemedText>
+        </TouchableOpacity>
       </View>
     </View>
   );
@@ -398,6 +433,19 @@ const styles = StyleSheet.create({
     borderRadius: 6,
   },
   syncButtonText: {
+    color: '#fff',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  resetButton: {
+    backgroundColor: '#ff4d6d',
+    paddingVertical: 6,
+    paddingHorizontal: 12,
+    borderRadius: 6,
+    marginTop: 8,
+    alignSelf: 'flex-start',
+  },
+  resetButtonText: {
     color: '#fff',
     fontSize: 12,
     fontWeight: '600',

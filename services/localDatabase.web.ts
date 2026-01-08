@@ -22,6 +22,14 @@ export async function updateCustomer() {}
 
 export async function deleteCustomer() {}
 
+export async function dropAllTables() {
+  console.warn('SQLite not supported on Web. dropAllTables skipped.');
+}
+
+export async function closeDatabase() {
+  console.warn('SQLite not supported on Web. closeDatabase skipped.');
+}
+
 export default {
   initDB,
   addCustomer,
@@ -30,4 +38,6 @@ export default {
   markAsSynced,
   updateCustomer,
   deleteCustomer,
+  dropAllTables,
+  closeDatabase,
 };

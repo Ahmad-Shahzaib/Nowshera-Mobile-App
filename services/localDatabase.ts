@@ -1111,6 +1111,94 @@ export async function deleteInvoicePayments(invoiceId: string): Promise<void> {
   await execSql(`DELETE FROM invoice_payments WHERE invoiceId = ?;`, [invoiceId]);
 }
 
+/**
+ * Drop all known tables and indexes from the local DB and mark DB as uninitialized.
+ * This does NOT remove the physical DB file on platforms where that's possible,
+ * but it clears all data structures so a subsequent `initDB()` will recreate tables.
+ */
+export async function dropAllTables() {
+  try {
+    await execSql('BEGIN TRANSACTION;');
+
+    const tables = [
+      'invoice_payments',
+      'invoice_items',
+      'invoices',
+      'customers',
+      'products',
+      'categories',
+      'warehouses',
+      'dealers',
+      'bank_accounts'
+    ];
+
+    for (const t of tables) {
+      try {
+        await execSql(`DROP TABLE IF EXISTS ${t};`);
+      } catch (e) {
+        // ignore individual drop errors
+      }
+    }
+
+    const indexes = [
+      'idx_products_label',
+      'idx_categories_name',
+      'idx_warehouses_name',
+      'idx_dealers_name',
+      'idx_bank_accounts_warehouse',
+      'idx_invoice_items_invoice',
+      'idx_invoice_payments_invoice'
+    ];
+
+    for (const idx of indexes) {
+      try {
+        await execSql(`DROP INDEX IF EXISTS ${idx};`);
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    await execSql('COMMIT;');
+
+    // run VACUUM to reclaim space if supported
+    try { await execSql('VACUUM;'); } catch (e) { /* ignore */ }
+
+    dbInitialized = false;
+    if (verboseLogging) console.info('[localDatabase] All tables dropped');
+  } catch (err) {
+    try { await execSql('ROLLBACK;'); } catch (e) { /* ignore */ }
+    console.error('[localDatabase] dropAllTables failed:', err);
+    throw err;
+  }
+}
+
+/**
+ * Attempt to close the underlying database resource and clear in-memory references.
+ */
+export async function closeDatabase() {
+  try {
+    isClosing = true;
+    const anyDb = db as any;
+    if (anyDb) {
+      if (typeof anyDb.closeAsync === 'function') {
+        await anyDb.closeAsync();
+      } else if (typeof anyDb.close === 'function') {
+        // some implementations expose a sync/async close
+        await anyDb.close();
+      } else if (typeof anyDb.closeSync === 'function') {
+        anyDb.closeSync();
+      } else if (anyDb._db && typeof anyDb._db.close === 'function') {
+        anyDb._db.close();
+      }
+    }
+  } catch (e) {
+    console.warn('[localDatabase] closeDatabase failed:', e);
+  } finally {
+    db = null;
+    isClosing = false;
+  }
+}
+
 export default {
   initDB,
   addCustomer,
@@ -1146,4 +1234,6 @@ export default {
   addInvoicePayment,
   getInvoicePayments,
   deleteInvoicePayments,
+  dropAllTables,
+  closeDatabase,
 };
