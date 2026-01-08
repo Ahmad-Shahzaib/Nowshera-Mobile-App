@@ -33,8 +33,8 @@ export async function syncAll(): Promise<SyncResult> {
     }
 
     console.log('[syncService] Starting sync - Step 1: Syncing customers first...');
-    // STEP 1: Sync customers first (critical for invoice foreign keys)
     const customerResult = await syncUnsyncedCustomers();
+    console.log(`[syncService] Customer sync result: ${JSON.stringify(customerResult)}`);
     
     if (customerResult.syncedCount > 0) {
       console.log(`[syncService] ✓ Step 1 complete: ${customerResult.syncedCount} customers synced`);
@@ -44,7 +44,7 @@ export async function syncAll(): Promise<SyncResult> {
     
     console.log('[syncService] Starting sync - Step 2: Syncing invoices...');
     // STEP 2: Sync invoices (now all customer IDs should be synchronized)
-    const invoiceResult = await syncUnsyncedInvoices();
+    const invoiceResult = await syncUnsyncedInvoices(customerResult);
     
     if (invoiceResult.syncedCount > 0) {
       console.log(`[syncService] ✓ Step 2 complete: ${invoiceResult.syncedCount} invoices synced`);
@@ -221,12 +221,14 @@ export async function syncUnsynced(apiUrl?: string): Promise<SyncResult> {
  * NOTE: This should only be called AFTER syncUnsyncedCustomers() completes
  * to ensure all customer IDs are properly synchronized
  */
-export async function syncUnsyncedInvoices(): Promise<SyncResult> {
+export async function syncUnsyncedInvoices(customerResult: SyncResult): Promise<SyncResult> {
   try {
     const online = await isOnline();
     if (!online) {
       return { success: false, syncedCount: 0, error: 'No internet connection' };
     }
+
+    console.log('[syncService] Checking for unsynced invoices to sync...');
 
     const unsynced = await localDB.getUnsyncedInvoices();
     if (unsynced.length === 0) {
