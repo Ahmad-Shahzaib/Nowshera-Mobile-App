@@ -34,14 +34,22 @@ export default function CreateCustomer() {
   const handleCancel = useCallback(() => router.back(), [router]);
 
   const handleCreate = useCallback(async () => {
-    // Basic validation
+
+    // Enhanced validation: Name, Contact, and Email are required
+    if (!name.trim() && !contact.trim() && !email.trim()) {
+      Alert.alert('Validation Error', 'Name, Contact, and Email are required');
+      return;
+    }
     if (!name.trim()) {
       Alert.alert('Validation Error', 'Name is required');
       return;
     }
-
     if (!contact.trim()) {
       Alert.alert('Validation Error', 'Contact is required');
+      return;
+    }
+    if (!email.trim()) {
+      Alert.alert('Validation Error', 'Email is required');
       return;
     }
 

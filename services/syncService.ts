@@ -27,14 +27,19 @@ async function isOnline(): Promise<boolean> {
  */
 export async function syncAll(): Promise<SyncResult> {
   try {
+    console.log('[syncService] ========== syncAll() STARTED ==========');
     const online = await isOnline();
+    console.log(`[syncService] Network online: ${online}`);
+    
     if (!online) {
+      console.log('[syncService] ✗ Cannot sync - offline');
       return { success: false, syncedCount: 0, error: 'No internet connection' };
     }
 
-    console.log('[syncService] Starting sync - Step 1: Syncing customers first...');
+    console.log('[syncService] Step 1: Syncing customers first...');
     // STEP 1: Sync customers first (critical for invoice foreign keys)
     const customerResult = await syncUnsyncedCustomers();
+    console.log(`[syncService] Customer sync result:`, customerResult);
     
     if (customerResult.syncedCount > 0) {
       console.log(`[syncService] ✓ Step 1 complete: ${customerResult.syncedCount} customers synced`);
@@ -42,9 +47,10 @@ export async function syncAll(): Promise<SyncResult> {
       console.log('[syncService] ✓ Step 1 complete: No customers to sync');
     }
     
-    console.log('[syncService] Starting sync - Step 2: Syncing invoices...');
+    console.log('[syncService] Step 2: Syncing invoices...');
     // STEP 2: Sync invoices (now all customer IDs should be synchronized)
     const invoiceResult = await syncUnsyncedInvoices();
+    console.log(`[syncService] Invoice sync result:`, invoiceResult);
     
     if (invoiceResult.syncedCount > 0) {
       console.log(`[syncService] ✓ Step 2 complete: ${invoiceResult.syncedCount} invoices synced`);
@@ -53,7 +59,7 @@ export async function syncAll(): Promise<SyncResult> {
     }
 
     const totalSynced = customerResult.syncedCount + invoiceResult.syncedCount;
-    console.log(`[syncService] ✓ Sync complete: Total ${totalSynced} items synced (${customerResult.syncedCount} customers, ${invoiceResult.syncedCount} invoices)`);
+    console.log(`[syncService] ========== syncAll() COMPLETE: ${totalSynced} items synced ==========`);
 
     return {
       success: customerResult.success && invoiceResult.success,
@@ -61,7 +67,7 @@ export async function syncAll(): Promise<SyncResult> {
       error: [customerResult.error, invoiceResult.error].filter(Boolean).join('; ') || undefined
     };
   } catch (error: any) {
-    console.error('[syncService] Error in syncAll:', error);
+    console.error('[syncService] ✗ Error in syncAll:', error?.message);
     return { success: false, syncedCount: 0, error: error.message };
   }
 }
@@ -223,22 +229,27 @@ export async function syncUnsynced(apiUrl?: string): Promise<SyncResult> {
  */
 export async function syncUnsyncedInvoices(): Promise<SyncResult> {
   try {
+    console.log('[syncService] ===== syncUnsyncedInvoices() START =====');
+    
     const online = await isOnline();
+    console.log(`[syncService] Is online: ${online}`);
     if (!online) {
+      console.log('[syncService] ✗ Offline - cannot sync');
       return { success: false, syncedCount: 0, error: 'No internet connection' };
     }
 
+    console.log('[syncService] Fetching unsynced invoices from DB...');
     const unsynced = await localDB.getUnsyncedInvoices();
+    console.log(`[syncService] ✓ Found ${unsynced.length} unsynced invoices`);
+    
     if (unsynced.length === 0) {
-      console.log('[syncService] No unsynced invoices found');
+      console.log('[syncService] No invoices to sync');
       return { success: true, syncedCount: 0 };
     }
 
-    console.log(`[syncService] Found ${unsynced.length} unsynced invoices to process`);
-    
-    // Log details of unsynced invoices
+    console.log('[syncService] Unsynced invoices details:');
     for (const inv of unsynced) {
-      console.log(`[syncService]   - Invoice ${inv.invoiceNo}: customerId=${inv.customerId}, syncStatus=${inv.syncStatus}`);
+      console.log(`[syncService]   - #${inv.invoiceNo}: customer=${inv.customerId}, status=${inv.syncStatus}`);
     }
 
     const axios = getAxiosInstance();
@@ -246,8 +257,12 @@ export async function syncUnsyncedInvoices(): Promise<SyncResult> {
     const errors: string[] = [];
     const skipped: string[] = [];
 
+    console.log('[syncService] Starting invoice sync loop...');
     for (const row of unsynced) {
+      let payload: any = null;
       try {
+        console.log(`[syncService] >>> Processing #${row.invoiceNo}...`);
+        
         // Check if customer has a local ID (starts with "local_")
         const hasLocalCustomerId = row.customerId?.toString().startsWith('local_');
         
@@ -285,41 +300,73 @@ export async function syncUnsyncedInvoices(): Promise<SyncResult> {
         }
 
         // Get invoice items and payments from local DB
+        console.log(`[syncService] Fetching items for invoice ${row.invoiceNo}...`);
         const items = await localDB.getInvoiceItems(row.id);
+        console.log(`[syncService] Fetched ${items.length} items for invoice ${row.invoiceNo}`);
+        
+        console.log(`[syncService] Fetching payments for invoice ${row.invoiceNo}...`);
         const payments = await localDB.getInvoicePayments(row.id);
+        console.log(`[syncService] Fetched ${payments.length} payments for invoice ${row.invoiceNo}`);
         
         console.log(`[syncService] Invoice ${row.invoiceNo}: ${items.length} items, ${payments.length} payments`);
 
         // Resolve bank account IDs to chart_of_accounts_id for payments
+        console.log(`[syncService] Resolving payment accounts...`);
+        console.log(`[syncService] Payments to process: ${payments.length}`, payments.map(p => ({ accountId: p.accountId, amount: p.amount })));
+        
         const resolvedPayments = await Promise.all(
           payments.map(async (payment) => {
             // Get bank account to find its chartAccountId
             const bankAccount = await localDB.getBankAccountById(payment.accountId);
-            const accountId = bankAccount?.chartAccountId || payment.accountId;
             
-            if (bankAccount?.chartAccountId) {
-              console.log(`[syncService] Resolved payment account from ${payment.accountId} to chart_account_id ${accountId}`);
+            // If bank account not found, use the account ID directly as fallback
+            // This handles cases where payment.accountId doesn't map to a bank account
+            let accountId = payment.accountId;
+            
+            if (bankAccount && bankAccount.chartAccountId) {
+              accountId = bankAccount.chartAccountId;
+              console.log(`[syncService] ✓ Resolved payment account ${payment.accountId} → chart_account_id ${accountId}`);
+            } else {
+              console.warn(`[syncService] ⚠️ Bank account ${payment.accountId} not found in DB, using accountId as-is`);
+              // Try using a default bank account
+              const allAccounts = await localDB.getAllBankAccounts();
+              if (allAccounts.length > 0) {
+                accountId = allAccounts[0].chartAccountId || allAccounts[0].id || payment.accountId;
+                console.log(`[syncService] Using default bank account chartAccountId: ${accountId}`);
+              }
+            }
+            
+            // Format payment date: convert DD/MM/YYYY to YYYY-MM-DD
+            let paymentDate = payment.date;
+            if (paymentDate && typeof paymentDate === 'string') {
+              if (paymentDate.includes('/')) {
+                const parts = paymentDate.split('/');
+                if (parts.length === 3) {
+                  const [day, month, year] = parts;
+                  paymentDate = `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
+                }
+              }
             }
             
             return {
               amount: payment.amount,
               account_id: accountId,
               payment_method: payment.paymentMethod || 1,
-              date: payment.date,
+              date: paymentDate,
               reference: payment.reference || '',
             };
           })
         );
 
         // Prepare API payload
-        const payload = {
+        payload = {
           customer_type: row.customerType || 'Customer',
           customer_id: resolvedCustomerId,
           issue_date: row.issueDate,
-          due_date: row.dueDate,
-          category_id: parseInt(row.categoryId || '0') || 0,
-          warehouse_id: parseInt(row.warehouseId || '0') || 0,
-          ref_number: row.refNumber,
+          due_date: row.dueDate || row.issueDate,
+          category_id: parseInt(row.categoryId || '0') || 9, // Default to 9 if missing
+          warehouse_id: parseInt(row.warehouseId || '0') || 1, // Default to 1 if missing
+          ref_number: row.refNumber || '',
           delivery_status: row.deliveryStatus || 'Pending',
           items: items.map(item => ({
             id: item.productId,
@@ -331,19 +378,32 @@ export async function syncUnsyncedInvoices(): Promise<SyncResult> {
           payments: resolvedPayments,
         };
 
-        console.log(`[syncService] Syncing invoice ${row.invoiceNo} to server with payload:`, payload);
+        console.log(`[syncService] Invoice payload for ${row.invoiceNo}:`, JSON.stringify(payload, null, 2));
+        console.log(`[syncService] Syncing invoice ${row.invoiceNo} to server...`);
         const response = await axios.post('/invoice/store', payload);
-        
-        console.log(`[syncService] API response for ${row.invoiceNo}:`, { status: response.data?.status, data: response.data?.data });
-        
+
         if (response.data?.status) {
           const serverId = response.data?.data?.id || response.data?.data?.invoice_id;
           if (serverId) {
+            console.log(`[syncService] ✓ Server accepted #${row.invoiceNo} (server ID: ${serverId})`);
+            
+            // Step 1: Mark as synced
             await localDB.markInvoiceAsSynced(row.id, String(serverId));
+            console.log(`[syncService] ✓ Marked #${row.invoiceNo} as SYNCED in DB`);
+
+            // Step 2: Delete invoice items from local DB
+            await localDB.deleteInvoiceItems(row.id);
+
+            // Step 3: Delete invoice payments from local DB
+            await localDB.deleteInvoicePayments(row.id);
+
+            // Step 4: Delete invoice itself from local DB
+            await localDB.deleteInvoice(row.id);
+
             syncedCount++;
-            console.log(`[syncService] ✓ Invoice ${row.invoiceNo} synced successfully (server ID: ${serverId})`);
+            console.log(`[syncService] <<< #${row.invoiceNo} SYNCED & REMOVED (syncedCount: ${syncedCount})`);
           } else {
-            console.warn(`[syncService] ⚠️ Invoice ${row.invoiceNo} response had no ID: ${JSON.stringify(response.data?.data)}`);
+            console.warn(`[syncService] ✗ No ID in response for #${row.invoiceNo}`);
             errors.push(`${row.invoiceNo}: No ID returned from server`);
           }
         } else {
@@ -351,45 +411,55 @@ export async function syncUnsyncedInvoices(): Promise<SyncResult> {
         }
       } catch (error: any) {
         const errorMsg = error.response?.data?.message || error.message || 'Unknown error';
-        const errorCode = error.response?.status || 0;
         
-        // Mark invoice as FAILED - do NOT auto-retry infinitely
-        // User must manually fix the issue (e.g., correct API 422 validation error)
-        await localDB.markInvoiceAsFailed(row.id, `${errorMsg} (HTTP ${errorCode})`);
-        
-        console.error(`[syncService] ✗ Failed to sync invoice ${row.invoiceNo}: ${errorMsg}`);
+        console.warn(`[syncService] <<< #${row.invoiceNo} FAILED: ${errorMsg}`);
         errors.push(`${row.invoiceNo}: ${errorMsg}`);
+        
+        // Mark invoice as FAILED to prevent infinite retry loop
+        // This prevents the same invoice from syncing repeatedly when there's a validation error
+        // Retry up to 3 times if database is locked
+        let marked = false;
+        for (let attempt = 1; attempt <= 3; attempt++) {
+          try {
+            await localDB.markInvoiceAsFailed(row.id, errorMsg);
+            console.log(`[syncService] ✓ Marked #${row.invoiceNo} as FAILED (won't retry)`);
+            marked = true;
+            break;
+          } catch (markError: any) {
+            const markErrMsg = String(markError?.message || markError);
+            if (/database is locked/i.test(markErrMsg) && attempt < 3) {
+              console.warn(`[syncService] Database locked (attempt ${attempt}/3), retrying...`);
+              await new Promise(resolve => setTimeout(resolve, 500 * attempt));
+            } else {
+              console.warn(`[syncService] Failed to mark invoice as failed after ${attempt} attempt(s):`, markError);
+              break;
+            }
+          }
+        }
       }
     }
 
     // Build result message
     let resultMessage = '';
     if (skipped.length > 0) {
-      console.warn(`[syncService] ⚠️ ${skipped.length} invoices skipped - their customers need to be synced first`);
+      console.warn(`[syncService] ⚠️ Skipped ${skipped.length} invoices (customer not synced)`);
       resultMessage += `${skipped.length} invoices skipped (customer not synced). `;
     }
     if (errors.length > 0) {
-      console.error(`[syncService] ✗ ${errors.length} invoices marked as FAILED (will NOT auto-retry)`);
+      console.error(`[syncService] ✗ ${errors.length} invoices failed to sync`);
       resultMessage += `${errors.length} invoices failed: ${errors.join('; ')}`;
     }
 
-    if (errors.length > 0 && syncedCount === 0) {
-      return { success: false, syncedCount: 0, error: errors.join('; ') };
-    }
-
-    // Log final summary
-    if (syncedCount > 0 || skipped.length > 0 || errors.length > 0) {
-      console.log(`[syncService] Invoice sync summary: ${syncedCount} synced, ${skipped.length} skipped, ${errors.length} failed`);
-    }
+    console.log(`[syncService] ===== syncUnsyncedInvoices() RESULT: ${syncedCount} synced, ${skipped.length} skipped, ${errors.length} failed =====`);
 
     return { 
-      success: true, 
+      success: syncedCount > 0 && errors.length === 0, 
       syncedCount,
       error: resultMessage.trim() || undefined
     };
   } catch (error: any) {
-    console.error('[syncService] Error in syncUnsyncedInvoices:', error);
-    return { success: false, syncedCount: 0, error: error.message };
+    console.error('[syncService] ✗ Exception in syncUnsyncedInvoices:', error?.message);
+    return { success: false, syncedCount: 0, error: error?.message };
   }
 }
 

@@ -18,7 +18,8 @@ type SyncContextValue = {
   lastSyncTime: Date | null;
   isOnline: boolean;
   addCustomer: (payload: Partial<CustomerRow>) => Promise<CustomerRow>;
-  refresh: () => Promise<void>;
+  // Returns the total number of unsynced items (customers + invoices)
+  refresh: () => Promise<number>;
   syncNow: (apiUrl?: string) => Promise<{ success: boolean; syncedCount: number; error?: string }>;
 };
 
@@ -50,6 +51,7 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const totalUnsynced = unsynced.length + unsyncedInvoices.length;
     console.log(`[SyncContext] Unsynced count: ${unsynced.length} customers + ${unsyncedInvoices.length} invoices = ${totalUnsynced} total`);
     setUnsyncedCount(totalUnsynced);
+    return totalUnsynced;
   }, []);
 
   useEffect(() => {
@@ -220,16 +222,13 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
     setIsSyncing(true);
     try {
-      console.log('[SyncContext] ========================================');
-      console.log('[SyncContext] Starting full sync...');
-      console.log('[SyncContext] PHASE 1: Upload local data to server');
-      console.log('[SyncContext]   → Customers will be synced FIRST');
-      console.log('[SyncContext]   → Then invoices will be synced');
-      console.log('[SyncContext] ========================================');
+      console.log('[SyncContext] ========== MANUAL SYNC START ==========');
+      console.log('[SyncContext] Calling syncAll()...');
       
       // Step 1: Upload unsynced local data to server
       // CRITICAL: syncAll() ensures customers are synced before invoices
       const res = apiUrl ? await syncUnsynced(apiUrl) : await syncAll();
+      console.log(`[SyncContext] syncAll() returned:`, res);
       console.log(`[SyncContext] ✓ PHASE 1 complete - ${res.syncedCount} items uploaded to server`);
       if (res.error) {
         console.warn('[SyncContext] Some items had issues:', res.error);
@@ -313,15 +312,27 @@ export const SyncProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   useEffect(() => {
     // when connection becomes true, attempt background sync
-    if (isConnected && unsyncedCount > 0 && !isSyncing) {
-      console.log(`[SyncContext] Connection restored, auto-syncing ${unsyncedCount} unsynced items...`);
-      console.log('[SyncContext] Note: Customers will be synced before their invoices');
-      // fire and forget
+    if (isConnected && !isSyncing) {
+      console.log('[SyncContext] ⚡ Network connection detected, checking for unsynced items...');
+      // Refresh local counts first to ensure we have an up-to-date unsynced count
       (async () => {
-        await syncNow();
+        try {
+          const total = await refresh();
+          console.log(`[SyncContext] Found ${total} unsynced items (customers + invoices)`);
+          if (total > 0) {
+            console.log(`[SyncContext] Connection restored, auto-syncing ${total} unsynced items...`);
+            console.log('[SyncContext] Note: Customers will be synced before their invoices');
+            // fire and forget
+            await syncNow();
+          } else {
+            console.log('[SyncContext] No unsynced items to sync');
+          }
+        } catch (error) {
+          console.error('[SyncContext] Error during auto-sync:', error);
+        }
       })();
     }
-  }, [isConnected, unsyncedCount, isSyncing]);
+  }, [isConnected, isSyncing, refresh, syncNow]);
 
   const addCustomer = useCallback(async (payload: Partial<CustomerRow>) => {
     const row = await localDB.addCustomer(payload);

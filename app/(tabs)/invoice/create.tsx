@@ -753,13 +753,14 @@ export default function CreateInvoice() {
           const accountIdMatch = payment.account.match(/^account-(\d+)$/);
           const accountId = accountIdMatch ? parseInt(accountIdMatch[1], 10) : null;
 
-          // Find account by ID to get the chart_account_id
+          // Find account by ID to get the chart_account_id (use fallback if not present)
           const account = filteredBankAccounts.find(acc => acc.id === accountId);
           console.log('[CreateInvoice] Mapping payment:', payment, 'Account ID:', accountId, 'Found account:', account);
           return {
             amount: parseFloat(payment.amount) || 0,
             account_id: account?.id || 0,
-            payment_method: 1, // Default payment method
+            // Some DB rows may store the chart/account id under a different key; safely access it and fall back to account.id
+            payment_method: (account as any)?.account_id ?? account?.id ?? 0,
             date: payment.date,
             reference: payment.reference || '',
           };

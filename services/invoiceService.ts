@@ -402,13 +402,16 @@ export const invoiceService = {
     } else {
       // OFFLINE PATH: Save to local DB as UNSYNCED
       const syncStatus = 'UNSYNCED';
-      console.log('[Invoice] Offline detected — invoice saved locally (UNSYNCED)');
+      console.log('[invoiceService] 🔴 Offline detected — invoice saved locally (UNSYNCED)');
+      console.log(`[invoiceService] Invoice details: customerId=${invoice.customerId}, invoiceNo=${invoice.invoiceNo}`);
 
       const localInvoice = await localDB.addInvoice({
         ...invoice,
         synced: 0,
         syncStatus,
       });
+
+      console.log(`[invoiceService] ✓ Invoice stored in local DB with id: ${localInvoice.id}, syncStatus: ${localInvoice.syncStatus}, synced: ${localInvoice.synced}`);
 
       // Save invoice items locally
       for (const item of items) {
@@ -422,6 +425,8 @@ export const invoiceService = {
         });
       }
 
+      console.log(`[invoiceService] ✓ Saved ${items.length} invoice items`);
+
       // Save invoice payments locally
       for (const payment of payments) {
         await localDB.addInvoicePayment({
@@ -434,7 +439,8 @@ export const invoiceService = {
         });
       }
 
-      console.log('[invoiceService] Invoice saved locally with ID:', localInvoice.id);
+      console.log(`[invoiceService] ✓ Saved ${payments.length} invoice payments`);
+      console.log('[invoiceService] 📦 Offline invoice ready for sync when online');
       return localRowToInvoice(localInvoice);
     }
   },

@@ -2,6 +2,7 @@ import { InvoiceDetailModal } from '@/components/InvoiceDetailModal';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 import { Colors } from '@/constants/theme';
+import { useSync } from '@/context/SyncContext';
 import { useThemeColor } from '@/hooks/use-theme-color';
 import useNetwork from '@/hooks/useNetwork';
 import useResponsive from '@/hooks/useResponsive';
@@ -27,6 +28,7 @@ export default function InvoiceScreen() {
   const resp = useResponsive();
   const router = useRouter();
   const { isConnected } = useNetwork();
+  const { unsyncedCount: syncContextUnsyncedCount, isSyncing, syncNow } = useSync();
   // useThemeColor will pick the right color from Colors.light/dark
   const bg = useThemeColor({}, 'background');
   const text = useThemeColor({}, 'text');
@@ -150,13 +152,16 @@ export default function InvoiceScreen() {
 
   // Handle load more (pagination)
   const onLoadMore = useCallback(() => {
+    // Prevent load more if searching or filtering (searchText or any filter is active)
+    const isFiltering = !!searchText.trim() || selectedCustomer || selectedStatus || selectedShop || selectedDate;
+    if (isFiltering) return;
     if (!isConnected || loadingMore || currentPage >= totalPages) {
       return;
     }
     const nextPage = currentPage + 1;
     console.log(`[Invoice Screen] Loading more invoices (page ${nextPage})`);
     loadInvoices(nextPage, true);
-  }, [isConnected, loadingMore, currentPage, totalPages, loadInvoices]);
+  }, [isConnected, loadingMore, currentPage, totalPages, loadInvoices, searchText, selectedCustomer, selectedStatus, selectedShop, selectedDate]);
 
   // Handle delete
   const handleDelete = useCallback(async (id: string) => {
@@ -363,8 +368,6 @@ export default function InvoiceScreen() {
               >
                 <MaterialIcons name="share" size={resp.fontSize(14)} color="#fff" />
               </TouchableOpacity>
-
-
             </View>
           </View>
         </ThemedView>
@@ -468,11 +471,23 @@ export default function InvoiceScreen() {
       }
 
       if (q) {
-        // match invoice number, customer name or amount (case-insensitive)
-        const invoiceNo = inv.invoiceNo.toLowerCase();
-        const customer = inv.customerName.toLowerCase();
-        const amount = inv.dueAmount.toLowerCase();
-        if (!invoiceNo.includes(q) && !customer.includes(q) && !amount.includes(q)) return false;
+        // match invoice number, customer name or amount (case-insensitive, robust for numbers)
+        const invoiceNo = (inv.invoiceNo ? String(inv.invoiceNo) : '').toLowerCase();
+        const customer = (inv.customerName ? String(inv.customerName) : '').toLowerCase();
+        const amount = (inv.dueAmount ? String(inv.dueAmount) : '').toLowerCase();
+        // Also match formatted amount (with commas, decimals, etc.)
+        const formattedAmount = (() => {
+          const num = parseFloat(inv.dueAmount || '0');
+          return num.toLocaleString('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 }).toLowerCase();
+        })();
+        if (
+          !invoiceNo.includes(q) &&
+          !customer.includes(q) &&
+          !amount.includes(q) &&
+          !formattedAmount.includes(q)
+        ) {
+          return false;
+        }
       }
 
       return true;
@@ -522,14 +537,30 @@ export default function InvoiceScreen() {
             </View>
           </View>
 
-          <TouchableOpacity
-            activeOpacity={0.85}
-            style={[stylesLocal.addButton, { backgroundColor: tint }]}
-            accessibilityLabel="Create invoice"
-            onPress={() => router.push('/(tabs)/invoice/create')}
-          >
-            <ThemedText type="defaultSemiBold" style={stylesLocal.addButtonText}>+ Create Invoice</ThemedText>
-          </TouchableOpacity>
+          <View style={{ flexDirection: 'column', gap: 8 }}>
+            <TouchableOpacity
+              activeOpacity={0.85}
+              style={[stylesLocal.addButton, { backgroundColor: tint }]}
+              accessibilityLabel="Create invoice"
+              onPress={() => router.push('/(tabs)/invoice/create')}
+            >
+              <ThemedText type="defaultSemiBold" style={stylesLocal.addButtonText}>+ Create</ThemedText>
+            </TouchableOpacity>
+
+            {isConnected && unsyncedCount > 0 && (
+              <TouchableOpacity
+                activeOpacity={0.85}
+                style={[stylesLocal.addButton, { backgroundColor: '#27ae60', opacity: isSyncing ? 0.6 : 1 }]}
+                accessibilityLabel="Sync unsynced invoices"
+                disabled={isSyncing}
+                onPress={() => syncNow()}
+              >
+                <ThemedText type="defaultSemiBold" style={stylesLocal.addButtonText}>
+                  {isSyncing ? '⟳ Syncing...' : '⬆ Sync'}
+                </ThemedText>
+              </TouchableOpacity>
+            )}
+          </View>
         </View>
 
         <View style={stylesLocal.filtersFooter}>
@@ -640,36 +671,52 @@ export default function InvoiceScreen() {
               ListEmptyComponent={
                 <View style={{ padding: 20, alignItems: 'center' }}>
                   <ThemedText>
-                    {isConnected ? 'No invoices found' : 'No unsynced invoices'}
+                    {searchText.trim()
+                      ? 'No invoices match your search.'
+                      : isConnected
+                        ? 'No invoices found'
+                        : 'No unsynced invoices'}
                   </ThemedText>
                 </View>
               }
               ListFooterComponent={
-                loadingMore ? (
-                  <View style={{ padding: 20, alignItems: 'center' }}>
-                    <ActivityIndicator size="small" color={tint} />
-                    <ThemedText style={{ marginTop: 5, fontSize: resp.fontSize(12) }}>
-                      Loading more...
-                    </ThemedText>
-                  </View>
-                ) : isConnected && currentPage < totalPages ? (
-                  <View style={{ padding: 20, alignItems: 'center' }}>
-                    <TouchableOpacity
-                      style={[stylesLocal.loadMoreBtn, { backgroundColor: tint }]}
-                      onPress={onLoadMore}
-                    >
-                      <ThemedText style={stylesLocal.loadMoreText}>
-                        Load More (Page {currentPage + 1}/{totalPages})
-                      </ThemedText>
-                    </TouchableOpacity>
-                  </View>
-                ) : isConnected && totalInvoices > 0 ? (
-                  <View style={{ padding: 20, alignItems: 'center' }}>
-                    <ThemedText style={{ fontSize: resp.fontSize(12), color: icon }}>
-                      Showing all {totalInvoices} invoices
-                    </ThemedText>
-                  </View>
-                ) : null
+                // Only show loading or load more if not filtering/searching and there are filtered results
+                (() => {
+                  const isFiltering = !!searchText.trim() || selectedCustomer || selectedStatus || selectedShop || selectedDate;
+                  if (isFiltering || filtered.length === 0) return null;
+                  if (loadingMore) {
+                    return (
+                      <View style={{ padding: 20, alignItems: 'center' }}>
+                        <ActivityIndicator size="small" color={tint} />
+                        <ThemedText style={{ marginTop: 5, fontSize: resp.fontSize(12) }}>
+                          Loading more...
+                        </ThemedText>
+                      </View>
+                    );
+                  } else if (isConnected && currentPage < totalPages) {
+                    return (
+                      <View style={{ padding: 20, alignItems: 'center' }}>
+                        <TouchableOpacity
+                          style={[stylesLocal.loadMoreBtn, { backgroundColor: tint }]}
+                          onPress={onLoadMore}
+                        >
+                          <ThemedText style={stylesLocal.loadMoreText}>
+                            Load More (Page {currentPage + 1}/{totalPages})
+                          </ThemedText>
+                        </TouchableOpacity>
+                      </View>
+                    );
+                  } else if (isConnected && totalInvoices > 0) {
+                    return (
+                      <View style={{ padding: 20, alignItems: 'center' }}>
+                        <ThemedText style={{ fontSize: resp.fontSize(12), color: icon }}>
+                          Showing all {totalInvoices} invoices
+                        </ThemedText>
+                      </View>
+                    );
+                  }
+                  return null;
+                })()
               }
             />
           </>

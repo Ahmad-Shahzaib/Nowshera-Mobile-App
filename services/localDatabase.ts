@@ -353,10 +353,28 @@ export async function initDB() {
             cols.push(info.rows.item(i).name);
           }
           
-          if (!cols.includes('syncStatus') || !cols.includes('syncError')) {
-            needsInvoiceRecreate = true;
-            console.warn('[localDatabase] ⚠️  Invoices table missing sync columns, will recreate...');
-          } else {
+          // ADD MISSING COLUMNS instead of dropping table (preserve data!)
+          if (!cols.includes('syncStatus')) {
+            console.log('[localDatabase] Adding missing syncStatus column to invoices...');
+            try {
+              await execSql(`ALTER TABLE invoices ADD COLUMN syncStatus TEXT DEFAULT 'UNSYNCED';`);
+              console.log('[localDatabase] ✓ Added syncStatus column');
+            } catch (e) {
+              console.warn('[localDatabase] Failed to add syncStatus:', e);
+            }
+          }
+          
+          if (!cols.includes('syncError')) {
+            console.log('[localDatabase] Adding missing syncError column to invoices...');
+            try {
+              await execSql(`ALTER TABLE invoices ADD COLUMN syncError TEXT;`);
+              console.log('[localDatabase] ✓ Added syncError column');
+            } catch (e) {
+              console.warn('[localDatabase] Failed to add syncError:', e);
+            }
+          }
+          
+          if (cols.includes('syncStatus') && cols.includes('syncError')) {
             if (verboseLogging) console.log('[localDatabase] ✓ Invoices table has required columns');
           }
         } catch (e: any) {
@@ -364,44 +382,6 @@ export async function initDB() {
           const msg = String(e?.message || e);
           if (!msg.includes('no such table')) {
             console.warn('[localDatabase] Error checking invoices table schema:', e);
-          }
-        }
-        
-        if (needsInvoiceRecreate) {
-          let dropSucceeded = false;
-          let dropAttempts = 0;
-          
-          // Retry dropping tables up to 3 times in case of database lock
-          while (!dropSucceeded && dropAttempts < 3) {
-            try {
-              dropAttempts++;
-              console.log(`[localDatabase] Recreating invoice tables (attempt ${dropAttempts}/3)...`);
-              
-              // Drop tables with small delay between operations
-              await execSql(`DROP TABLE IF EXISTS invoice_payments;`);
-              await new Promise(resolve => setTimeout(resolve, 100));
-              
-              await execSql(`DROP TABLE IF EXISTS invoice_items;`);
-              await new Promise(resolve => setTimeout(resolve, 100));
-              
-              await execSql(`DROP TABLE IF EXISTS invoices;`);
-              
-              console.log('[localDatabase] ✓ Dropped outdated invoice tables');
-              dropSucceeded = true;
-            } catch (e: any) {
-              const msg = String(e?.message || e);
-              if (msg.includes('database is locked')) {
-                console.warn(`[localDatabase] Database locked when dropping tables (attempt ${dropAttempts}/3), waiting...`);
-                // Wait a bit longer before retry
-                await new Promise(resolve => setTimeout(resolve, 500 * dropAttempts));
-              } else {
-                console.error(`[localDatabase] Failed to drop invoice tables (attempt ${dropAttempts}/3):`, e);
-                if (dropAttempts >= 3) {
-                  console.warn('[localDatabase] Giving up on table recreation - tables will be created as-is');
-                  break;
-                }
-              }
-            }
           }
         }
       }
@@ -954,10 +934,17 @@ export async function deleteInvoice(localId: string) {
 }
 
 export async function getUnsyncedInvoices(): Promise<InvoiceRow[]> {
-  const res: any = await execSql(`SELECT * FROM invoices WHERE syncStatus = 'UNSYNCED' ORDER BY createdAt ASC;`);
-  const output: InvoiceRow[] = [];
-  for (let i = 0; i < res.rows.length; i++) output.push(res.rows.item(i));
-  return output;
+  try {
+    console.log('[localDatabase] 🔍 Querying unsynced invoices with WHERE syncStatus = "UNSYNCED"...');
+    const res: any = await execSql(`SELECT * FROM invoices WHERE syncStatus = 'UNSYNCED' ORDER BY createdAt ASC;`);
+    const output: InvoiceRow[] = [];
+    for (let i = 0; i < res.rows.length; i++) output.push(res.rows.item(i));
+    console.log(`[localDatabase] ✓ Found ${output.length} unsynced invoices:`, output.map(r => ({ id: r.id, invoiceNo: r.invoiceNo, syncStatus: r.syncStatus })));
+    return output;
+  } catch (error) {
+    console.error('[localDatabase] ✗ Error querying unsynced invoices:', error);
+    return [];
+  }
 }
 
 export async function markInvoiceAsSynced(localId: string, serverId?: string) {
@@ -1229,6 +1216,16 @@ export async function getBankAccountById(accountId: number): Promise<BankAccount
   }
 }
 
+export async function getAllBankAccounts(): Promise<BankAccountRow[]> {
+  try {
+    const res: any = await execSql(`SELECT * FROM bank_accounts LIMIT 1;`);
+    return res.rows.length > 0 ? [res.rows.item(0)] : [];
+  } catch (error) {
+    console.error('[localDatabase] getAllBankAccounts failed:', error);
+    return [];
+  }
+}
+
 export async function clearAllBankAccounts() {
   await execSql(`DELETE FROM bank_accounts;`);
 }
@@ -1354,6 +1351,7 @@ export default {
   saveBankAccounts,
   getBankAccounts,
   getBankAccountById,
+  getAllBankAccounts,
   clearAllBankAccounts,
   addInvoiceItem,
   getInvoiceItems,
