@@ -50,6 +50,12 @@ export default function TabLayout() {
           />
 
           
+
+          <Tabs.Screen
+            name="dashboard"
+            options={{ headerShown: false, title: 'Dashboard' }}
+          />
+
           <Tabs.Screen
             name="logout"
             options={{ headerShown: false, title: 'Logout' }}

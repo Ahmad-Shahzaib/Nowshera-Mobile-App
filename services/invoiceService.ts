@@ -72,6 +72,22 @@ function localRowToInvoice(row: any): Invoice {
 }
 
 export const invoiceService = {
+    /**
+     * Get count of unsynced invoices (for dashboard)
+     */
+    async getUnsyncedCount(): Promise<number> {
+      try {
+        if (typeof localDB.getUnsyncedInvoices === 'function') {
+          const unsynced = await localDB.getUnsyncedInvoices();
+          return unsynced.length;
+        }
+        // fallback: return 0 if method is not available
+        return 0;
+      } catch (error) {
+        console.error('[invoiceService] Error getting unsynced invoice count:', error);
+        return 0;
+      }
+    },
   /**
    * Fetch invoices with pagination - OFFLINE FIRST
    * Online: Fetch from API with pagination

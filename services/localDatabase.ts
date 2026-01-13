@@ -947,6 +947,19 @@ export async function getUnsyncedInvoices(): Promise<InvoiceRow[]> {
   }
 }
 
+// For dashboard: count both 'UNSYNCED' and 'FAILED' as unsynced
+export async function getDashboardUnsyncedInvoices(): Promise<InvoiceRow[]> {
+  try {
+    const res: any = await execSql(`SELECT * FROM invoices WHERE syncStatus = 'UNSYNCED' OR syncStatus = 'FAILED' ORDER BY createdAt ASC;`);
+    const output: InvoiceRow[] = [];
+    for (let i = 0; i < res.rows.length; i++) output.push(res.rows.item(i));
+    return output;
+  } catch (error) {
+    console.error('[localDatabase] ✗ Error querying dashboard unsynced invoices:', error);
+    return [];
+  }
+}
+
 export async function markInvoiceAsSynced(localId: string, serverId?: string) {
   const now = new Date().toISOString();
   await execSql(

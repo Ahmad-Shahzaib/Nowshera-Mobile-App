@@ -45,7 +45,7 @@ export default function Customers() {
         setLoading(true);
       }
       setError(null);
-      
+
       const data = await customerService.getAllCustomers();
       console.log('Fetched customers:', data); // Debug: Check if balance is included
       setCustomers(data);
@@ -59,7 +59,18 @@ export default function Customers() {
       console.error('Error fetching customers:', err);
       setError(err.message || 'Failed to load customers');
       Alert.alert('Error', err.message || 'Failed to load customers');
-    } finally {
+    }
+
+    // Fetch all product items after successful login
+    try {
+      const { productService } = await import('@/services/productService');
+      await productService.syncProducts();
+      console.log('Products synced successfully after login');
+    } catch (fetchError) {
+      console.warn('Failed to sync products after login', fetchError);
+    }
+
+    finally {
       if (showLoader) {
         setLoading(false);
       }
@@ -77,7 +88,7 @@ export default function Customers() {
     setRefreshing(true);
     setPage(1);
     await fetchCustomers(false);
-    
+
     // Also trigger sync if we have unsynced items
     if (unsyncedCount > 0 && isOnline) {
       await syncNow();
@@ -132,12 +143,12 @@ export default function Customers() {
             try {
               // Delete using offline-first service
               await customerService.deleteCustomer(customerId);
-              
+
               // Immediately update UI by removing the customer from state
-              setCustomers(prevCustomers => 
+              setCustomers(prevCustomers =>
                 prevCustomers.filter(customer => customer.id !== customerId)
               );
-              
+
               // Show success message
               Alert.alert('Success', 'Customer deleted successfully');
             } catch (err: any) {
@@ -187,7 +198,7 @@ export default function Customers() {
           </View>
 
           <View style={styles.actions}>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={[styles.iconBtn, { backgroundColor: '#f9b233' }]}
               onPress={() => item.id && router.push({ pathname: '/(tabs)/customer/[id]', params: { id: item.id.toString() } })}
               disabled={!item.id}
@@ -201,7 +212,7 @@ export default function Customers() {
             >
               <ThemedText style={styles.actionIcon}>✏️</ThemedText>
             </TouchableOpacity>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={[styles.iconBtn, { backgroundColor: '#ff4d6d' }]}
               onPress={() => item.id && handleDeleteCustomer(item.id, item.name)}
               disabled={!item.id}
@@ -240,7 +251,7 @@ export default function Customers() {
           </View>
         )}
         {unsyncedCount > 0 && isOnline && (
-          <View style={[styles.syncInfo, { marginLeft: 12 }] }>
+          <View style={[styles.syncInfo, { marginLeft: 12 }]}>
             <ThemedText style={styles.syncInfoText}>{unsyncedCount} pending sync</ThemedText>
           </View>
         )}
@@ -264,9 +275,9 @@ export default function Customers() {
             <ActivityIndicator size="small" color={Colors.light.tint} style={{ marginLeft: 8 }} />
           )}
         </View> */}
-        
+
         {unsyncedCount > 0 && isOnline && !isSyncing && (
-          <TouchableOpacity 
+          <TouchableOpacity
             style={styles.syncButton}
             onPress={handleSync}
             activeOpacity={0.7}
