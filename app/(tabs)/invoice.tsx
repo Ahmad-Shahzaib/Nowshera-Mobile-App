@@ -12,6 +12,7 @@ import localDB from '@/services/localDatabase';
 import { Customer } from '@/types/customer';
 import { Invoice } from '@/types/invoice';
 import { MaterialIcons } from '@expo/vector-icons';
+import * as FileSystem from 'expo-file-system/legacy';
 import * as Print from 'expo-print';
 import { useFocusEffect, useRouter } from 'expo-router';
 import * as Sharing from 'expo-sharing';
@@ -237,83 +238,132 @@ export default function InvoiceScreen() {
       });
     };
 
-    const generatePdfAndShare = async (inv: InvoiceItem) => {
-      try {
-        // Try to fetch detailed invoice (items/payments) from service
-        const detailResult = await invoiceService.getInvoiceDetail(inv.serverId || inv.id);
-        const items = detailResult?.items ?? [];
-        const totals = detailResult?.totals ?? null;
+   const generatePdfAndShare = async (inv: InvoiceItem) => {
+  let finalPdfUri = null;
+  let professionalFilename = '';
 
-        const formatNum = (n: number | string) => {
-          const num = typeof n === 'number' ? n : parseFloat(String(n) || '0');
-          return num.toLocaleString('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-        };
+  try {
+    // Try to fetch detailed invoice (items/payments) from service
+    const detailResult = await invoiceService.getInvoiceDetail(inv.serverId || inv.id);
+    const items = detailResult?.items ?? [];
+    const totals = detailResult?.totals ?? null;
 
-        const rowsHtml = items.map((it, idx) => {
-          const desc = it.description || (it as any).sub_description || '-';
-          const qty = it.quantity ?? 0;
-          const rate = parseFloat(it.price as any || '0');
-          const value = it.subtotal ?? Math.round(qty * rate);
-          return `<tr><td style="padding:6px;border:1px solid #ddd">${idx + 1}</td><td style="padding:6px;border:1px solid #ddd">${desc}</td><td style="padding:6px;border:1px solid #ddd">${qty}</td><td style="padding:6px;border:1px solid #ddd">${formatNum(rate)}</td><td style="padding:6px;border:1px solid #ddd">${formatNum(value)}</td></tr>`;
-        }).join('') || '<tr><td style="padding:6px;border:1px solid #ddd" colspan="5">No items</td></tr>';
-
-        // Grand total: sum of per-line values
-        const computedTotal = items.reduce((s: number, it: any) => {
-          const qty = it.quantity ?? 0;
-          const rate = parseFloat(it.price as any || '0');
-          const value = it.subtotal ?? Math.round(qty * rate);
-          return s + (isNaN(value) ? 0 : value);
-        }, 0);
-
-        const dueAmount = (totals && typeof totals.due === 'number') ? totals.due : parseFloat(inv.dueAmount || '0');
-
-        const html = `
-          <html>
-            <head>
-              <meta name="viewport" content="width=device-width, initial-scale=1" />
-              <style>
-                body { font-family: Arial, Helvetica, sans-serif; padding: 18px; color: #222 }
-                .header { text-align:center; margin-bottom:12px }
-                .title { font-size:20px; font-weight:700 }
-                .row { display:flex; justify-content:space-between; margin-top:8px }
-                .table { width:100%; border-collapse: collapse; margin-top: 12px }
-                .table th, .table td { border: 1px solid #ddd; padding: 6px; text-align: left }
-                .totals { margin-top: 12px; text-align: right }
-              </style>
-            </head>
-            <body>
-              <div class="header"><div class="title">SALE INVOICE</div></div>
-              <div class="row"><div><strong>Invoice #:</strong></div><div>${inv.invoiceNo}</div></div>
-              <div class="row"><div><strong>Date:</strong></div><div>${new Date(inv.issueDate).toLocaleDateString()}</div></div>
-              <div class="row"><div><strong>Customer:</strong></div><div>${inv.customerName}</div></div>
-              <table class="table">
-                <thead>
-                  <tr><th style="padding:6px">S#</th><th style="padding:6px">Product</th><th style="padding:6px">Qty</th><th style="padding:6px">Rate</th><th style="padding:6px">Total</th></tr>
-                </thead>
-                <tbody>
-                  ${rowsHtml}
-                </tbody>
-              </table>
-              <div class="totals">
-                <div style="display:flex;justify-content:space-between;align-items:center">
-                  <div><strong>Due: ${formatNum(dueAmount)}</strong></div>
-                  <div><strong>Total: ${formatNum(computedTotal)}</strong></div>
-                </div>
-              </div>
-            </body>
-          </html>
-        `;
-
-        const { uri } = await Print.printToFileAsync({ html });
-        if (!(await Sharing.isAvailableAsync())) {
-          console.log('Sharing not available on this platform');
-          return;
-        }
-        await Sharing.shareAsync(uri, { mimeType: 'application/pdf', dialogTitle: `Invoice ${inv.invoiceNo}` });
-      } catch (e) {
-        console.error('Failed to generate/share PDF', e);
-      }
+    const formatNum = (n: number | string) => {
+      const num = typeof n === 'number' ? n : parseFloat(String(n) || '0');
+      return num.toLocaleString('en-PK', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
     };
+
+    const rowsHtml = items.map((it, idx) => {
+      const desc = it.description || (it as any).sub_description || '-';
+      const qty = it.quantity ?? 0;
+      const rate = parseFloat(it.price as any || '0');
+      const value = it.subtotal ?? Math.round(qty * rate);
+      return `<tr><td style="padding:6px;border:1px solid #ddd">${idx + 1}</td><td style="padding:6px;border:1px solid #ddd">${desc}</td><td style="padding:6px;border:1px solid #ddd">${qty}</td><td style="padding:6px;border:1px solid #ddd">${formatNum(rate)}</td><td style="padding:6px;border:1px solid #ddd">${formatNum(value)}</td></tr>`;
+    }).join('') || '<tr><td style="padding:6px;border:1px solid #ddd" colspan="5">No items</td></tr>';
+
+    // Grand total: sum of per-line values
+    const computedTotal = items.reduce((s: number, it: any) => {
+      const qty = it.quantity ?? 0;
+      const rate = parseFloat(it.price as any || '0');
+      const value = it.subtotal ?? Math.round(qty * rate);
+      return s + (isNaN(value) ? 0 : value);
+    }, 0);
+
+    const dueAmount = (totals && typeof totals.due === 'number') ? totals.due : parseFloat(inv.dueAmount || '0');
+
+    const html = `
+      <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1" />
+          <style>
+            body { font-family: Arial, Helvetica, sans-serif; padding: 18px; color: #222 }
+            .header { text-align:center; margin-bottom:12px }
+            .title { font-size:20px; font-weight:700 }
+            .row { display:flex; justify-content:space-between; margin-top:8px }
+            .table { width:100%; border-collapse: collapse; margin-top: 12px }
+            .table th, .table td { border: 1px solid #ddd; padding: 6px; text-align: left }
+            .totals { margin-top: 12px; text-align: right }
+          </style>
+        </head>
+        <body>
+          <div class="header"><div class="title">SALE INVOICE</div></div>
+          <div class="row"><div><strong>Invoice #:</strong></div><div>${inv.invoiceNo}</div></div>
+          <div class="row"><div><strong>Date:</strong></div><div>${new Date(inv.issueDate).toLocaleDateString()}</div></div>
+          <div class="row"><div><strong>Customer:</strong></div><div>${inv.customerName}</div></div>
+          <table class="table">
+            <thead>
+              <tr><th style="padding:6px">S#</th><th style="padding:6px">Product</th><th style="padding:6px">Qty</th><th style="padding:6px">Rate</th><th style="padding:6px">Total</th></tr>
+            </thead>
+            <tbody>
+              ${rowsHtml}
+            </tbody>
+          </table>
+          <div class="totals">
+            <div style="display:flex;justify-content:space-between;align-items:center">
+              <div><strong>Due: ${formatNum(dueAmount)}</strong></div>
+              <div><strong>Total: ${formatNum(computedTotal)}</strong></div>
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+
+    // Step 1: Generate the PDF with a random temporary name
+    const { uri } = await Print.printToFileAsync({ html });
+    console.log('PDF generated at temporary path:', uri);
+    finalPdfUri = uri; // By default, we'll use this URI
+
+    // Step 2: Create a professional filename
+    const sanitizeForFilename = (str: string) =>
+      str
+        .trim()
+        .replace(/[^\w\s-]/g, '') // Remove special characters
+        .replace(/\s+/g, '_') // Replace spaces with underscores
+        .substring(0, 25); // Limit length
+
+    const customerName = sanitizeForFilename(inv.customerName || 'Customer');
+    const invoiceNo = sanitizeForFilename(inv.invoiceNo || 'Inv');
+    professionalFilename = `Invoice_${invoiceNo}_${customerName}.pdf`;
+    
+    const destinationUri = `${FileSystem.documentDirectory}${professionalFilename}`;
+    console.log(`Attempting to rename and copy to: ${destinationUri}`);
+
+    // Step 3: Copy the file to the new destination with the new name
+    await FileSystem.copyAsync({
+      from: uri,
+      to: destinationUri,
+    });
+    
+    // If copy is successful, update the URI to the new, professionally named one
+    finalPdfUri = destinationUri;
+    console.log('Successfully renamed PDF to:', professionalFilename);
+
+  } catch (error) {
+    console.error('Error during PDF generation or renaming. Will share the original file.', error);
+    // If an error occurs, finalPdfUri will remain the original random URI.
+    // The sharing logic below will still work.
+  }
+
+  // Step 4: Share the PDF
+  if (finalPdfUri) {
+    try {
+      if (!(await Sharing.isAvailableAsync())) {
+        alert('Sharing is not available on your device');
+        return;
+      }
+      await Sharing.shareAsync(finalPdfUri, {
+        mimeType: 'application/pdf',
+        dialogTitle: professionalFilename ? `Share: ${professionalFilename.replace('.pdf', '')}` : 'Share Invoice',
+      });
+      console.log('Shared PDF successfully.');
+    } catch (shareError) {
+      console.error('Failed to share PDF:', shareError);
+      alert('Could not share the PDF.');
+    }
+  } else {
+    alert('Could not generate the PDF for sharing.');
+  }
+};
 
     return (
       <View style={stylesLocal.rowWrapper}>
@@ -528,10 +578,10 @@ export default function InvoiceScreen() {
           <View>
             <ThemedText type="defaultSemiBold" style={[stylesLocal.title, { color: text }]}>Manage Invoices</ThemedText>
             <View style={stylesLocal.headerBadges}>
-              <View style={[stylesLocal.countBadge, { backgroundColor: tint }]}> 
+              <View style={[stylesLocal.countBadge, { backgroundColor: tint }]}>
                 <Text style={stylesLocal.countText}>Total: {totalInvoices}</Text>
               </View>
-              <View style={[stylesLocal.countBadge, { backgroundColor: '#ff9800', marginLeft: resp.horizontalScale(8) }]}> 
+              <View style={[stylesLocal.countBadge, { backgroundColor: '#ff9800', marginLeft: resp.horizontalScale(8) }]}>
                 <Text style={stylesLocal.countText}>Unsynced: {unsyncedCount}</Text>
               </View>
             </View>
