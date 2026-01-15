@@ -378,15 +378,15 @@ export const invoiceService = {
           throw new Error('API returned status false');
         }
       } catch (error: any) {
-        const errorMsg = error.response?.data?.message || error.message || 'Unknown error';
-        console.error('[invoiceService] ✗ Failed to create invoice on server:', errorMsg);
+        // const errorMsg = error.response?.data?.message || error.message || 'Unknown error';
+        // console.error('[invoiceService] ✗ Failed to create invoice on server:', errorMsg);
 
         // Save locally as FAILED for later inspection
         const localInvoice = await localDB.addInvoice({
           ...invoice,
           synced: 0,
           syncStatus: 'FAILED',
-          syncError: errorMsg,
+          // syncError: errorMsg,
         });
 
         // Save invoice items locally

@@ -19,6 +19,7 @@ import * as Sharing from 'expo-sharing';
 import React, { useCallback, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, FlatList, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
+import { Float } from 'react-native/Libraries/Types/CodegenTypes';
 
 type InvoiceItem = Invoice;
 
@@ -55,7 +56,7 @@ export default function InvoiceScreen() {
   // Filter state
   const [selectedDate, setSelectedDate] = useState<Date | null>(null);
   const [showDateModal, setShowDateModal] = useState(false);
-  const [selectedCustomer, setSelectedCustomer] = useState<string | null>(null);
+  const [selectedCustomer, setSelectedCustomer] = useState<number | null>(null);
   const [showCustomerModal, setShowCustomerModal] = useState(false);
   const [selectedStatus, setSelectedStatus] = useState<InvoiceItem['status'] | null>(null);
   const [showStatusModal, setShowStatusModal] = useState(false);
@@ -68,6 +69,10 @@ export default function InvoiceScreen() {
   const [detailModalVisible, setDetailModalVisible] = useState(false);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
   const [detailModalMode, setDetailModalMode] = useState<'view' | 'edit'>('view');
+
+  // Add state for customer balance
+  const [customerBalance, setCustomerBalance] = useState<{ balance: Float; type: string } | null>(null);
+  const [customerBalanceLoading, setCustomerBalanceLoading] = useState(false);
 
   // Load invoices from service with pagination
   const loadInvoices = useCallback(async (page: number = 1, append: boolean = false) => {
@@ -175,11 +180,9 @@ export default function InvoiceScreen() {
   }, [loadInvoices]);
 
   // build unique lists from invoice data for dropdowns
+  // Change customerOptions to [{ id, name }]
   const customerOptions = useMemo(() => {
-    // Get unique customer names from loaded customers
-    const names = customers.map((c) => c.name).filter(Boolean);
-    // Remove duplicates by using Set
-    return Array.from(new Set(names));
+    return customers.map((c) => ({ id: c.id, name: c.name })).filter(c => c.name);
   }, [customers]);
   const statusOptions: InvoiceItem['status'][] = ['Paid', 'Partially Paid', 'Unpaid'];
   const shopOptions = useMemo(() => Array.from(new Set(invoices.map((i) => i.warehouseName))).filter(Boolean) as string[], [invoices]);
@@ -426,7 +429,8 @@ export default function InvoiceScreen() {
   }
 
   // Simple modal dropdown used for customer/status/shop selection
-  function DropdownModal({ visible, title, options, onClose, onSelect }: { visible: boolean; title: string; options: string[]; onClose: () => void; onSelect: (value: string) => void; }) {
+  // Update DropdownModal for customer to use id
+  function DropdownModal({ visible, title, options, onClose, onSelect }: { visible: boolean; title: string; options: any[]; onClose: () => void; onSelect: (value: any) => void; }) {
     return (
       <Modal visible={visible} transparent animationType="fade">
         <Pressable style={stylesLocal.modalOverlay} onPress={onClose} />
@@ -434,8 +438,8 @@ export default function InvoiceScreen() {
           <Text style={stylesLocal.modalTitle}>{title}</Text>
           <ScrollView>
             {options.map((opt, index) => (
-              <TouchableOpacity key={`${opt}-${index}`} style={stylesLocal.modalItem} onPress={() => { onSelect(opt); onClose(); }}>
-                <Text style={stylesLocal.modalItemText}>{opt}</Text>
+              <TouchableOpacity key={`${opt.id ?? opt}-${index}`} style={stylesLocal.modalItem} onPress={() => { onSelect(opt.id ?? opt); onClose(); }}>
+                <Text style={stylesLocal.modalItemText}>{opt.name ?? opt}</Text>
               </TouchableOpacity>
             ))}
           </ScrollView>
@@ -510,7 +514,7 @@ export default function InvoiceScreen() {
   const filtered = useMemo(() => {
     const q = searchText.trim().toLowerCase();
     const filteredList = invoices.filter((inv) => {
-      if (selectedCustomer && inv.customerName !== selectedCustomer) return false;
+      if (selectedCustomer && Number(inv.customerId) !== selectedCustomer) return false;
       if (selectedStatus && inv.status !== selectedStatus) return false;
       if (selectedShop && inv.warehouseName !== selectedShop) return false;
       if (selectedDate) {
@@ -570,6 +574,33 @@ export default function InvoiceScreen() {
       return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
     });
   }, [selectedCustomer, selectedStatus, selectedShop, selectedDate, searchText, invoices, isConnected]);
+
+  // Fetch customer balance when selectedCustomer changes
+  React.useEffect(() => {
+    if (!selectedCustomer) {
+      setCustomerBalance(null);
+      return;
+    }
+    const fetchBalance = async () => {
+      setCustomerBalanceLoading(true);
+      try {
+        const result = await customerService.getCustomerBalance(selectedCustomer);
+        console.log('[InvoiceScreen] Customer balance API response:', result);
+        if (result?.success && result.data) {
+          setCustomerBalance({
+            balance: parseFloat(result.data.balance),
+            type: result.data.type
+          });
+        } else {
+          setCustomerBalance(null);
+        }
+      } catch (e) {
+        setCustomerBalance(null);
+      }
+      setCustomerBalanceLoading(false);
+    };
+    fetchBalance();
+  }, [selectedCustomer]);
 
   return (
     <SafeAreaView style={{ flex: 1 }} edges={["bottom"]}>
@@ -642,7 +673,11 @@ export default function InvoiceScreen() {
             </TouchableOpacity>
 
             <TouchableOpacity style={stylesLocal.filterItem} accessibilityLabel="Select customer" onPress={() => setShowCustomerModal(true)}>
-              <Text style={[stylesLocal.filterText, { color: icon }]}>{selectedCustomer ?? 'Customer ▾'}</Text>
+              <Text style={[stylesLocal.filterText, { color: icon }]}>
+                {selectedCustomer
+                  ? customers.find(c => c.id === selectedCustomer)?.name ?? 'Customer'
+                  : 'Customer ▾'}
+              </Text>
             </TouchableOpacity>
 
             <TouchableOpacity style={stylesLocal.filterItem} accessibilityLabel="Select status" onPress={() => setShowStatusModal(true)}>
@@ -653,12 +688,31 @@ export default function InvoiceScreen() {
               <Text style={[stylesLocal.filterText, { color: icon }]}>{selectedShop ?? 'Shop ▾'}</Text>
             </TouchableOpacity>
           </View>
-
-
         </View>
 
+        {/* Show customer balance below customer filter */}
+        {selectedCustomer && (
+          <View style={{ marginBottom: 8, marginLeft: 4 }}>
+            {customerBalanceLoading ? (
+              <Text style={{ color: icon, fontSize: 13 }}>Loading balance...</Text>
+            ) : customerBalance ? (
+              <Text style={{ color: icon, fontSize: 13 }}>
+                Remain Balance: <Text style={{ fontWeight: 'bold' }}>{customerBalance.balance} ({customerBalance.type})</Text>
+              </Text>
+            ) : (
+              <Text style={{ color: icon, fontSize: 13 }}>No balance info</Text>
+            )}
+          </View>
+        )}
+
         {/* Dropdown / calendar modals */}
-        <DropdownModal visible={showCustomerModal} title="Select customer" options={customerOptions} onClose={() => setShowCustomerModal(false)} onSelect={(v) => setSelectedCustomer(v)} />
+        <DropdownModal
+          visible={showCustomerModal}
+          title="Select customer"
+          options={customerOptions}
+          onClose={() => setShowCustomerModal(false)}
+          onSelect={(id) => setSelectedCustomer(id)}
+        />
         <DropdownModal visible={showStatusModal} title="Select status" options={statusOptions} onClose={() => setShowStatusModal(false)} onSelect={(v) => setSelectedStatus(v as InvoiceItem['status'])} />
         <DropdownModal visible={showShopModal} title="Select shop" options={shopOptions} onClose={() => setShowShopModal(false)} onSelect={(v) => setSelectedShop(v)} />
         <CalendarModal visible={showDateModal} onClose={() => setShowDateModal(false)} onSelect={(d) => setSelectedDate(d)} />

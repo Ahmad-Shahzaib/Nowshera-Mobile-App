@@ -38,6 +38,9 @@ export default function Customers() {
   const [page, setPage] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
 
+  // Add state for total customers
+  const [totalCustomers, setTotalCustomers] = useState<number>(0);
+
   // Fetch customers from service (offline-first)
   const fetchCustomers = useCallback(async (showLoader = true) => {
     try {
@@ -49,6 +52,10 @@ export default function Customers() {
       const data = await customerService.getAllCustomers();
       console.log('Fetched customers:', data); // Debug: Check if balance is included
       setCustomers(data);
+
+      // Set total customers count based on fetched data
+      setTotalCustomers(data.length);
+
       try {
         const u = await customerService.getUnsyncedCount();
         setUnsyncedLocalCount(u);
@@ -67,7 +74,14 @@ export default function Customers() {
       await productService.syncProducts();
       console.log('Products synced successfully after login');
     } catch (fetchError) {
-      console.warn('Failed to sync products after login', fetchError);
+      // Only log the error, do not attempt rollback or throw
+      console.warn(
+        'Error syncing products:',
+        fetchError && typeof fetchError === 'object' && 'message' in fetchError
+          ? (fetchError as Error).message
+          : String(fetchError)
+      );
+      // Remove any rollback or transaction code here
     }
 
     finally {
@@ -148,6 +162,7 @@ export default function Customers() {
               setCustomers(prevCustomers =>
                 prevCustomers.filter(customer => customer.id !== customerId)
               );
+              setTotalCustomers(prev => prev - 1); // decrement total
 
               // Show success message
               Alert.alert('Success', 'Customer deleted successfully');
@@ -241,7 +256,7 @@ export default function Customers() {
 
       <View style={{ marginTop: 8, flexDirection: 'row', alignItems: 'center' }}>
         <View style={styles.statBadge}>
-          <ThemedText style={styles.statText}>{customers.length}</ThemedText>
+          <ThemedText style={styles.statText}>{totalCustomers}</ThemedText>
           <ThemedText style={[styles.statText, { fontSize: 12, marginLeft: 6 }]}>Customers</ThemedText>
         </View>
 

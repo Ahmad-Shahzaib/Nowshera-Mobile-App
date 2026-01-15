@@ -45,19 +45,24 @@ class ProductService {
   }
 
   /**
-   * Search products by label
+   * Search products by label (all words must match)
    */
   async searchProducts(searchTerm: string): Promise<Product[]> {
     try {
-      if (!searchTerm.trim()) {
+      const trimmed = searchTerm.trim();
+      if (!trimmed) {
         return this.getLocalProducts();
       }
 
       await ensureDB();
-      const result = await db.getAllAsync(
-        'SELECT * FROM products WHERE label LIKE ? ORDER BY label ASC LIMIT 50',
-        [`%${searchTerm}%`]
-      );
+      // Split search term into words, ignore extra spaces
+      const words = trimmed.split(/\s+/).filter(Boolean);
+      // Build WHERE clause: label LIKE ? AND label LIKE ? ...
+      const whereClauses = words.map(() => 'label LIKE ?').join(' AND ');
+      const params = words.map(word => `%${word}%`);
+      const sql = `SELECT * FROM products WHERE ${whereClauses} ORDER BY label ASC LIMIT 50`;
+
+      const result = await db.getAllAsync(sql, params);
       return result || [];
     } catch (error) {
       console.error('Error searching products:', error);
@@ -142,14 +147,7 @@ class ProductService {
       console.log('Products synced successfully');
       return { success: true, count: products.length };
     } catch (error: any) {
-      console.error('Error syncing products:', {
-        message: error?.message,
-        status: error?.response?.status,
-        statusText: error?.response?.statusText,
-        data: error?.response?.data,
-        url: error?.config?.url,
-        baseURL: error?.config?.baseURL,
-      });
+     
       return {
         success: false,
         count: 0,
@@ -197,6 +195,31 @@ class ProductService {
     } catch (error) {
       console.error('Error checking product sync status:', error);
       return true;
+    }
+  }
+
+  /**
+   * Get paginated products from local database
+   * @param page 1-based page number
+   * @param pageSize number of items per page
+   * @returns { products: Product[], total: number }
+   */
+  async getLocalProductsPaginated(page: number, pageSize: number): Promise<{ products: Product[]; total: number }> {
+    try {
+      await ensureDB();
+      const offset = (page - 1) * pageSize;
+      const products = await db.getAllAsync(
+        'SELECT * FROM products ORDER BY label ASC LIMIT ? OFFSET ?',
+        [pageSize, offset]
+      );
+      const totalRow = await db.getFirstAsync('SELECT COUNT(*) as count FROM products');
+      return {
+        products: products || [],
+        total: totalRow?.count || 0,
+      };
+    } catch (error) {
+      console.error('Error getting paginated products:', error);
+      return { products: [], total: 0 };
     }
   }
 }

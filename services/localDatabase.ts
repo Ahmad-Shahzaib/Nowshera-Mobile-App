@@ -1038,7 +1038,7 @@ export async function saveDealers(dealers: Array<{ id: number; name: string }>, 
     
     if (verboseLogging) console.info(`[localDatabase] Saved ${dealers.length} dealers`);
   } catch (error) {
-    console.error('[localDatabase] saveDealers failed:', error);
+    // console.error('[localDatabase] saveDealers failed:', error);
     throw error;
   }
 }

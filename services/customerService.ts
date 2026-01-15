@@ -203,7 +203,7 @@ export const customerService = {
         console.warn('[customerService] Background sync unauthorized (401)');
         return;
       }
-      console.error('[customerService] Error syncing customers from API:', error);
+      // console.error('[customerService] Error syncing customers from API:', error);
       throw error;
     } finally {
       _isBackgroundSyncing = false;
@@ -455,4 +455,16 @@ export const customerService = {
       return { success: false, syncedCount: 0, error: error.message };
     }
   },
+
+  // Add this method to customerService
+  async getCustomerBalance(customerId: number) {
+    try {
+      const axios = getAxiosInstance();
+      const res = await axios.get(`/invoice/customer-balance/${customerId}`);
+      // Expecting API to return { success: boolean, data: { balance: number, type: string } }
+      return res.data;
+    } catch (e) {
+      return null;
+    }
+  }
 };

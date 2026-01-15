@@ -75,7 +75,7 @@ export const dealerService = {
       console.log(`[dealerService] Successfully synced ${dealers.length} dealers`);
       return { success: true, count: dealers.length };
     } catch (error: any) {
-      console.error('[dealerService] Error syncing dealers:', error);
+      // console.error('[dealerService] Error syncing dealers:', error);
       return { 
         success: false, 
         count: 0, 

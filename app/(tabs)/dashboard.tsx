@@ -1,3 +1,5 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import NetInfo from '@react-native-community/netinfo';
 import React, { useEffect, useState } from 'react';
 import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { customerService } from '../../services/customerService';
@@ -19,11 +21,26 @@ export default function DashboardTab() {
   const fetchCounts = async () => {
     setLoading(true);
     try {
-      const [customerCount, unsyncedCustomers, invoicePage, products, categories] = await Promise.all([
+      const netState = await NetInfo.fetch();
+      let products = 0;
+      if (netState.isConnected) {
+        // Ensure local DB is synced before counting
+        const needsSync = await productService.needsSync();
+        if (needsSync) {
+          await productService.syncProducts();
+        }
+        products = await productService.getProductCount();
+        await AsyncStorage.setItem('productCount', products.toString());
+      } else {
+        // Offline: read product count from local storage
+        const stored = await AsyncStorage.getItem('productCount');
+        products = stored ? parseInt(stored, 10) : 0;
+      }
+
+      const [customerCount, unsyncedCustomers, invoicePage, categories] = await Promise.all([
         customerService.getAllCustomers().then(arr => arr.length),
         customerService.getUnsyncedCount(),
         invoiceService.getInvoices(1, 1),
-        productService.getProductCount(),
         categoryService.getCategoryCount(),
       ]);
       let unsyncedInvoices = 0;

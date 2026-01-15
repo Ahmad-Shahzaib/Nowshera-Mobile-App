@@ -1489,11 +1489,11 @@ export default function CreateInvoice() {
 
               {/* Inline add form (compact) */}
               {showInlineAdd && (
-                <View style={[stylesLocal.productCard, { marginBottom: resp.vertical(12) }]}> 
+                <View style={[stylesLocal.productCard, { marginBottom: resp.vertical(12), position: 'relative', zIndex: 100 }]}>
                   <View style={{ flexDirection: 'row', gap: resp.horizontalScale(8), alignItems: 'center' }}>
                     <View style={{ flex: 1 }}>
                       <Text style={stylesLocal.formLabel}>Items*</Text>
-                      <View style={{ position: 'relative' }}>
+                      <View style={{ position: 'relative', zIndex: 100 }}>
                         <TextInput
                           style={stylesLocal.formInput}
                           placeholder="Search items..."
@@ -1511,6 +1511,8 @@ export default function CreateInvoice() {
                             <Text style={{ color: icon, fontSize: resp.fontSize(12) }}>Searching...</Text>
                           </View>
                         )}
+                        {/* Move suggestions dropdown OUTSIDE of productsContainer */}
+                        {/* Suggestions dropdown is rendered here, above the table */}
                         {showProductSuggestions && productSuggestions.length > 0 && (
                           <View style={stylesLocal.suggestionsContainer}>
                             <ScrollView style={stylesLocal.suggestionsList} nestedScrollEnabled>
@@ -2335,7 +2337,7 @@ const createStyles = (resp: ReturnType<typeof useResponsive>, theme: { bg: strin
       paddingTop: resp.vertical(16),
       borderTopWidth: 1,
       borderTopColor: theme.bg === Colors.light.background ? '#e2e8f0' : '#475569',
-      backgroundColor: theme.bg === Colors.light.background ? '#f1f5f9' : '#1e293b',
+      backgroundColor: theme.bg === Colors.light.background ? '#f1f5f9' : '#0f172a',
       paddingHorizontal: resp.horizontalScale(16),
       paddingVertical: resp.vertical(12),
       borderRadius: resp.horizontalScale(8),
